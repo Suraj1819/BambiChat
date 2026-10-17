@@ -1,9 +1,10 @@
+
 {
   "name": "bambi",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Bambi \u2014 private real-time messaging application",
+  "description": "Bambi — private real-time messaging application",
   "workspaces": [
     "client",
     "server",
@@ -13,6 +14,7 @@
     "dev": "concurrently \"npm run dev --workspace=server\" \"npm run dev --workspace=client\"",
     "dev:client": "npm run dev --workspace=client",
     "dev:server": "npm run dev --workspace=server",
+    "start": "npm run start --workspace=server",
     "build": "npm run build --workspace=client && npm run build --workspace=server",
     "build:client": "npm run build --workspace=client",
     "build:server": "npm run build --workspace=server",
