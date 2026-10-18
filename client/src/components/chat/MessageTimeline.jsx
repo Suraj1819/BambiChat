@@ -23,6 +23,8 @@ export function MessageTimeline({
   messages = [],
   currentUserId,
   isLoading = false,
+  highlight = '',
+  emptyLabel,
   onDownloadAttachment,
   className,
 }) {
@@ -63,8 +65,8 @@ export function MessageTimeline({
       <div className={cn('flex flex-1 items-center justify-center', className)}>
         <EmptyState
           icon={MessageSquare}
-          title="No messages yet"
-          description="Send a message or attach an encrypted file."
+          title={emptyLabel || 'No messages yet'}
+          description={emptyLabel ? 'Try a different search.' : 'Send a message or attach an encrypted file.'}
         />
       </div>
     );
@@ -97,6 +99,7 @@ export function MessageTimeline({
               <MessageBubble
                 message={msg}
                 isOwn={msg.senderId === currentUserId}
+                highlight={highlight}
                 onDownloadAttachment={onDownloadAttachment}
               />
             </div>

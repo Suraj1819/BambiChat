@@ -13,7 +13,10 @@ import { FriendsPanel } from '@/components/dialogs/FriendsPanel';
 import { CreateGroupDialog } from '@/components/dialogs/CreateGroupDialog';
 import { GroupInfoPanel } from '@/components/dialogs/GroupInfoPanel';
 import { SettingsPanel } from '@/components/dialogs/SettingsPanel';
-import { MessageSquarePlus, Loader2, Shield, Wifi, WifiOff } from 'lucide-react';
+import { ContactInfoPanel } from '@/components/dialogs/ContactInfoPanel';
+import { CallOverlay } from '@/features/calls/CallOverlay';
+import { useCall } from '@/features/calls/useCall';
+import { MessageSquarePlus, Loader2, Shield, Wifi, WifiOff, Search, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { api } from '@/lib/api';
 import { getSessionUser, clearSession } from '@/lib/session';
@@ -81,12 +84,23 @@ export function ChatPage() {
   const [groupInfoOpen, setGroupInfoOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [filter, setFilter] = useState('all');
+  const [contactOpen, setContactOpen] = useState(false);
+  const [chatSearchOpen, setChatSearchOpen] = useState(false);
+  const [chatSearch, setChatSearch] = useState('');
 
   const peerKeyCache = useRef(new Map());
   const activeIdRef = useRef(null);
   const conversationsRef = useRef([]);
   activeIdRef.current = activeId;
   conversationsRef.current = conversations;
+
+  const resolveCallPeer = useCallback((peerId) => {
+    const conv = conversationsRef.current.find((c) => c.peerUserId === peerId);
+    return conv ? { name: conv.name, avatarUrl: conv.avatarUrl } : null;
+  }, []);
+  const calls = useCall({ resolvePeer: resolveCallPeer });
+  const attachCalls = calls.attach;
 
   const initCrypto = useCallback(async (uid) => {
     setCryptoReady(false);
@@ -280,6 +294,7 @@ export function ChatPage() {
       return;
     }
     let cancelled = false;
+    let detachCalls = null;
     (async () => {
       await initCrypto(userId);
       if (cancelled) return;
@@ -289,6 +304,7 @@ export function ChatPage() {
       const s = connectSocket();
       if (!s) return;
 
+      detachCalls = attachCalls(s);
       const onConnect = () => setConnected(true);
       const onDisconnect = () => setConnected(false);
       s.on('connect', onConnect);
@@ -346,9 +362,17 @@ export function ChatPage() {
 
     return () => {
       cancelled = true;
+      detachCalls?.();
       disconnectSocket();
     };
-  }, [userId, initCrypto, loadList, navigate]);
+  }, [userId, initCrypto, loadList, navigate, attachCalls]);
+
+  // Reset per-conversation UI when switching chats.
+  useEffect(() => {
+    setContactOpen(false);
+    setChatSearchOpen(false);
+    setChatSearch('');
+  }, [activeId]);
 
   useEffect(() => {
     if (!activeId || !userId) {
@@ -401,12 +425,41 @@ export function ChatPage() {
   }, [activeId, userId]);
 
   const filtered = conversations.filter((c) => {
+    if (filter === 'unread' && !(c.unreadCount > 0)) return false;
+    if (filter === 'groups' && !(c.isGroup || c.type === 'group')) return false;
     if (!searchQuery.trim()) return true;
     return c.name?.toLowerCase().includes(searchQuery.toLowerCase());
   });
+  const unreadTotal = conversations.reduce((n, c) => n + (c.unreadCount || 0), 0);
   const activeConversation = conversations.find((c) => c.id === activeId);
   const isGroup = activeConversation?.isGroup || activeConversation?.type === 'group';
   const typingLabel = Object.values(typingUsers).join(', ');
+
+  const trimmedSearch = chatSearch.trim().toLowerCase();
+  const visibleMessages = trimmedSearch
+    ? messages.filter((m) => (m.body || '').toLowerCase().includes(trimmedSearch) || (m.attachment?.filename || '').toLowerCase().includes(trimmedSearch))
+    : messages;
+
+  const callsDisabledReason = calls.call.status !== 'idle'
+    ? 'You are already on a call'
+    : !connected
+      ? 'You are offline'
+      : !activeConversation?.peerUserId
+        ? 'Calls are not available for this chat'
+        : '';
+
+  const startCallWithActive = (kind) => {
+    if (!activeConversation?.peerUserId || callsDisabledReason) return;
+    calls.startCall({
+      peer: {
+        id: activeConversation.peerUserId,
+        name: activeConversation.name,
+        avatarUrl: activeConversation.avatarUrl,
+      },
+      conversationId: activeConversation.id,
+      kind,
+    });
+  };
 
   async function distributeGroupKey(conversationId, memberIds, groupKeyB64, epoch = 1) {
     const wrapped = [];
@@ -556,15 +609,17 @@ export function ChatPage() {
   };
 
   const handleSend = async (text) => {
-    if (!activeId || !cryptoReady || !userId) return;
+    if (!activeId || !cryptoReady || !userId) return false;
     emitTyping(activeId, false);
     try {
       await sendEncryptedPayload(text, text, null);
+      return true;
     } catch (e) {
       setError(e.message);
       setMessages((prev) =>
         prev.map((m) => (m.status === 'sending' ? { ...m, status: 'failed' } : m))
       );
+      return false;
     }
   };
 
@@ -646,6 +701,9 @@ export function ChatPage() {
             currentUser={me}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
+            filter={filter}
+            onFilterChange={setFilter}
+            unreadTotal={unreadTotal}
             onNewChat={() => setSearchOpen(true)}
             onNewGroup={() => setGroupOpen(true)}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -676,10 +734,10 @@ export function ChatPage() {
             ) : filtered.length === 0 ? (
               <EmptyState
                 icon={MessageSquarePlus}
-                title={searchQuery ? 'No results' : 'No conversations'}
-                description="Find people or create a group to start messaging."
+                title={searchQuery || filter !== 'all' ? 'No results' : 'No conversations'}
+                description={filter === 'unread' ? 'You have no unread chats.' : filter === 'groups' ? 'You are not in any groups yet.' : 'Find people or create a group to start messaging.'}
                 action={
-                  !searchQuery && (
+                  !searchQuery && filter === 'all' && (
                     <div className="flex gap-2">
                       <Button variant="secondary" size="sm" onClick={() => setSearchOpen(true)}>
                         Find people
@@ -711,21 +769,40 @@ export function ChatPage() {
             <ConversationHeader
               conversation={{
                 ...activeConversation,
-                subtitle: typingLabel
-                  ? `${typingLabel} is typing…`
-                  : cryptoReady
-                    ? isGroup
-                      ? 'Group · End-to-end encrypted'
-                      : 'End-to-end encrypted'
-                    : undefined,
+                subtitle: typingLabel ? `${typingLabel} is typing…` : undefined,
               }}
               onBack={() => setActiveId(null)}
-              onMore={isGroup ? () => setGroupInfoOpen(true) : undefined}
+              onOpenInfo={isGroup ? () => setGroupInfoOpen(true) : () => setContactOpen(true)}
+              onSearch={() => setChatSearchOpen(true)}
+              onAudioCall={() => startCallWithActive('audio')}
+              onVideoCall={() => startCallWithActive('video')}
+              callsDisabled={Boolean(callsDisabledReason)}
+              callsDisabledReason={callsDisabledReason}
             />
+            {chatSearchOpen && (
+              <div className="flex items-center gap-2 border-b border-bambi-border bg-bambi-surface px-3 py-2 md:px-5">
+                <Search className="h-4 w-4 shrink-0 text-bambi-text-secondary" />
+                <input
+                  autoFocus
+                  type="search"
+                  value={chatSearch}
+                  onChange={(e) => setChatSearch(e.target.value)}
+                  placeholder="Search in this chat"
+                  aria-label="Search in this chat"
+                  className="min-w-0 flex-1 bg-transparent text-sm text-bambi-text placeholder:text-bambi-text-secondary focus:outline-none"
+                />
+                {trimmedSearch && <span className="shrink-0 text-xs text-bambi-text-secondary">{visibleMessages.length} found</span>}
+                <button type="button" onClick={() => { setChatSearchOpen(false); setChatSearch(''); }} aria-label="Close search" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-bambi-text-secondary hover:bg-bambi-background">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
             <MessageTimeline
-              messages={messages}
+              messages={visibleMessages}
               currentUserId={userId}
               isLoading={loadingMessages}
+              highlight={trimmedSearch ? chatSearch.trim() : ''}
+              emptyLabel={trimmedSearch ? 'No matching messages' : undefined}
               onDownloadAttachment={handleDownloadAttachment}
             />
             <MessageComposer
@@ -777,6 +854,29 @@ export function ChatPage() {
         open={groupOpen}
         onClose={() => setGroupOpen(false)}
         onCreated={handleGroupCreated}
+      />
+      <ContactInfoPanel
+        open={contactOpen && !isGroup}
+        conversation={activeConversation}
+        messages={messages}
+        onClose={() => setContactOpen(false)}
+        onAudioCall={() => startCallWithActive('audio')}
+        onVideoCall={() => startCallWithActive('video')}
+        onSearch={() => setChatSearchOpen(true)}
+        onDownloadAttachment={handleDownloadAttachment}
+        onBlocked={() => { setActiveId(null); loadList(); }}
+        callsDisabled={Boolean(callsDisabledReason)}
+        callsDisabledReason={callsDisabledReason}
+      />
+      <CallOverlay
+        call={calls.call}
+        notice={calls.notice}
+        onDismissNotice={calls.dismissNotice}
+        onAccept={calls.acceptCall}
+        onReject={calls.rejectCall}
+        onHangUp={calls.hangUp}
+        onToggleMute={calls.toggleMute}
+        onToggleCamera={calls.toggleCamera}
       />
       <GroupInfoPanel
         open={groupInfoOpen}

@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { api } from '@/lib/api';
 import { setSession } from '@/lib/session';
+import { getThemePreference, resolveTheme, setThemePreference } from '@/lib/theme';
 
 export function AuthPage() {
   const navigate = useNavigate();
@@ -16,15 +17,12 @@ export function AuthPage() {
   const [displayName, setDisplayName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [theme, setTheme] = useState(() => {
-    try { return localStorage.getItem('bambi-theme') || 'dark'; } catch { return 'dark'; }
-  });
+  const [theme, setTheme] = useState(() => resolveTheme(getThemePreference()));
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark';
     setTheme(next);
-    document.documentElement.classList.toggle('dark', next === 'dark');
-    try { localStorage.setItem('bambi-theme', next); } catch { /* storage unavailable */ }
+    setThemePreference(next);
   };
 
   const submit = async (event) => {

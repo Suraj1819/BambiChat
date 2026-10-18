@@ -3,15 +3,11 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './app/App.jsx';
+import { initTheme } from './lib/theme.js';
 import './styles/index.css';
 
-// Apply the saved theme before React paints to avoid a light-mode flash.
-try {
-  const savedTheme = localStorage.getItem('bambi-theme') || 'dark';
-  document.documentElement.classList.toggle('dark', savedTheme === 'dark');
-} catch {
-  document.documentElement.classList.add('dark');
-}
+// Apply the saved theme (Light, Dark or System) before React paints to avoid a flash.
+initTheme();
 
 const queryClient = new QueryClient({
   defaultOptions: {
