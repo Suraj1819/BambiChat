@@ -31,7 +31,7 @@ function dateLabel(value) {
   });
 }
 
-function getDistanceFromBottom(element) {
+function distanceFromBottom(element) {
   return (
     element.scrollHeight -
     element.scrollTop -
@@ -49,25 +49,19 @@ export function MessageTimeline({
   className,
 }) {
   const containerRef = useRef(null);
-  const contentRef = useRef(null);
   const wasNearBottom = useRef(true);
-  const isFirstRender = useRef(true);
-  const previousMessageCount = useRef(0);
+  const firstRender = useRef(true);
   const previousLastMessageId = useRef(null);
-  const previousFirstMessageId = useRef(null);
-  const previousScrollHeight = useRef(0);
-  const previousScrollTop = useRef(0);
 
   const [showLatest, setShowLatest] = useState(false);
 
-  const scrollToBottom = useCallback((behavior = 'auto') => {
+  const scrollToBottom = useCallback((smooth = false) => {
     const container = containerRef.current;
     if (!container) return;
 
-    container.scrollTo({
-      top: container.scrollHeight,
-      behavior,
-    });
+    container.scrollTop = smooth
+      ? container.scrollHeight
+      : container.scrollHeight;
 
     wasNearBottom.current = true;
     setShowLatest(false);
@@ -75,96 +69,38 @@ export function MessageTimeline({
 
   useLayoutEffect(() => {
     const container = containerRef.current;
-
     if (!container || isLoading) return;
 
-    const firstMessage = messages[0];
     const lastMessage = messages[messages.length - 1];
-
-    const firstMessageId =
-      firstMessage?.id ?? firstMessage?.clientMessageId ?? null;
-
     const lastMessageId =
       lastMessage?.id ?? lastMessage?.clientMessageId ?? null;
 
-    const messageCountChanged =
-      messages.length !== previousMessageCount.current;
-
-    const lastMessageChanged =
+    const isNewLastMessage =
       lastMessageId !== previousLastMessageId.current;
 
-    const olderMessagesPrepended =
-      messages.length > previousMessageCount.current &&
-      previousMessageCount.current > 0 &&
-      firstMessageId !== previousFirstMessageId.current;
-
-    if (isFirstRender.current) {
+    if (firstRender.current) {
       container.scrollTop = container.scrollHeight;
+      firstRender.current = false;
       wasNearBottom.current = true;
       setShowLatest(false);
-      isFirstRender.current = false;
-    } else if (olderMessagesPrepended && !wasNearBottom.current) {
-      const heightDifference =
-        container.scrollHeight - previousScrollHeight.current;
-
-      container.scrollTop =
-        previousScrollTop.current + heightDifference;
-
-      setShowLatest(true);
-    } else if (wasNearBottom.current) {
+    } else if (isNewLastMessage && wasNearBottom.current) {
       container.scrollTop = container.scrollHeight;
       setShowLatest(false);
-    } else if (messageCountChanged || lastMessageChanged) {
-      setShowLatest(getDistanceFromBottom(container) > 140);
+    } else if (isNewLastMessage) {
+      setShowLatest(true);
     }
 
-    previousMessageCount.current = messages.length;
-    previousFirstMessageId.current = firstMessageId;
     previousLastMessageId.current = lastMessageId;
-    previousScrollHeight.current = container.scrollHeight;
-    previousScrollTop.current = container.scrollTop;
   }, [messages, isLoading]);
-
-  useLayoutEffect(() => {
-    const container = containerRef.current;
-    const content = contentRef.current;
-
-    if (
-      !container ||
-      !content ||
-      typeof ResizeObserver === 'undefined'
-    ) {
-      return undefined;
-    }
-
-    const observer = new ResizeObserver(() => {
-      if (wasNearBottom.current) {
-        container.scrollTop = container.scrollHeight;
-        setShowLatest(false);
-      } else {
-        setShowLatest(getDistanceFromBottom(container) > 140);
-      }
-
-      previousScrollHeight.current = container.scrollHeight;
-      previousScrollTop.current = container.scrollTop;
-    });
-
-    observer.observe(content);
-
-    return () => observer.disconnect();
-  }, []);
 
   const handleScroll = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    const nearBottom = getDistanceFromBottom(container) < 140;
+    const nearBottom = distanceFromBottom(container) < 140;
 
     wasNearBottom.current = nearBottom;
     setShowLatest(!nearBottom);
-
-    previousScrollHeight.current = container.scrollHeight;
-    previousScrollTop.current = container.scrollTop;
   }, []);
 
   if (isLoading) {
@@ -208,50 +144,48 @@ export function MessageTimeline({
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        className="message-wallpaper min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-4 md:px-8 md:py-6"
+        className={cn(
+          'message-wallpaper min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-4 md:px-8 md:py-6',
+          className
+        )}
         style={{
-          overflowAnchor: 'none',
+          overflowAnchor: 'auto',
           WebkitOverflowScrolling: 'touch',
         }}
       >
-        <div
-          ref={contentRef}
-          className="flex min-w-0 flex-col gap-2"
-        >
-          {messages.map((msg) => {
-            const label = dateLabel(msg.createdAt);
-            const showDate = label && label !== previousDate;
-            previousDate = label;
+        {messages.map((msg) => {
+          const label = dateLabel(msg.createdAt);
+          const showDate = label && label !== previousDate;
+          previousDate = label;
 
-            return (
-              <div
-                key={msg.id || msg.clientMessageId}
-                className="contents"
-              >
-                {showDate && (
-                  <div className="my-2 flex justify-center">
-                    <span className="rounded-full border border-bambi-border bg-bambi-surface/90 px-3 py-1 text-[11px] font-medium text-bambi-text-secondary shadow-sm">
-                      {label}
-                    </span>
-                  </div>
-                )}
+          return (
+            <div
+              key={msg.id || msg.clientMessageId}
+              className="contents"
+            >
+              {showDate && (
+                <div className="my-2 flex justify-center">
+                  <span className="rounded-full border border-bambi-border bg-bambi-surface/90 px-3 py-1 text-[11px] font-medium text-bambi-text-secondary shadow-sm">
+                    {label}
+                  </span>
+                </div>
+              )}
 
-                <MessageBubble
-                  message={msg}
-                  isOwn={msg.senderId === currentUserId}
-                  highlight={highlight}
-                  onDownloadAttachment={onDownloadAttachment}
-                />
-              </div>
-            );
-          })}
-        </div>
+              <MessageBubble
+                message={msg}
+                isOwn={msg.senderId === currentUserId}
+                highlight={highlight}
+                onDownloadAttachment={onDownloadAttachment}
+              />
+            </div>
+          );
+        })}
       </div>
 
       {showLatest && (
         <button
           type="button"
-          onClick={() => scrollToBottom('smooth')}
+          onClick={() => scrollToBottom(true)}
           className="absolute bottom-4 right-4 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-bambi-border bg-bambi-surface text-bambi-text shadow-lg transition hover:-translate-y-0.5 hover:text-bambi-primary"
           aria-label="Scroll to latest messages"
           title="Latest messages"
