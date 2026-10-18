@@ -6,10 +6,13 @@ const router = Router();
 
 router.post('/register', async (req, res, next) => {
   try {
-    const { username, displayName } = req.body || {};
-    const result = await store.register({ username, displayName });
+    const { username, displayName, phone } = req.body || {};
+    const result = await store.register({ username, displayName, phone });
     if (result.error) {
-      const status = result.error.code === 'USERNAME_TAKEN' ? 409 : 400;
+      const status =
+        result.error.code === 'USERNAME_TAKEN' || result.error.code === 'PHONE_TAKEN'
+          ? 409
+          : 400;
       return res.status(status).json({ error: result.error });
     }
     const token = store.createSession(result.data.id);
@@ -21,13 +24,13 @@ router.post('/register', async (req, res, next) => {
 
 router.post('/login', async (req, res, next) => {
   try {
-    const { username } = req.body || {};
-    if (!username) {
+    const { username, phone } = req.body || {};
+    if (!username && !phone) {
       return res.status(400).json({
-        error: { code: 'VALIDATION', message: 'username is required' },
+        error: { code: 'VALIDATION', message: 'username or phone is required' },
       });
     }
-    const result = await store.login(username);
+    const result = await store.login(username, phone);
     if (result.error) {
       return res.status(404).json({ error: result.error });
     }

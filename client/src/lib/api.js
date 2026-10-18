@@ -49,16 +49,16 @@ async function request(path, options = {}) {
 }
 
 export const api = {
-  register: (username, displayName) =>
+  register: (username, displayName, phone) =>
     request('/api/v1/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ username, displayName }),
+      body: JSON.stringify({ username, displayName, phone }),
     }),
 
-  login: (username) =>
+  login: (username, phone) =>
     request('/api/v1/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ username }),
+      body: JSON.stringify({ username, phone }),
     }),
 
   logout: () => request('/api/v1/auth/logout', { method: 'POST' }),

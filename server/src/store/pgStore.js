@@ -1028,11 +1028,177 @@ export const pgStore = {
   },
 
   setPresence(userId, status) {
-    presence.set(userId, { status, at: now() });
+    const prev = presence.get(userId);
+    const at = now();
+    const lastSeen =
+      status === 'offline' ? at : prev?.lastSeen || prev?.at || null;
+    presence.set(userId, {
+      status,
+      at,
+      lastSeen: status === 'offline' ? at : lastSeen,
+    });
     return presence.get(userId);
   },
 
   getPresence(userId) {
-    return presence.get(userId) || { status: 'offline', at: null };
+    return presence.get(userId) || { status: 'offline', at: null, lastSeen: null };
+  },
+
+  async getPresenceForViewer(targetUserId, viewerUserId) {
+    const p = this.getPresence(targetUserId);
+    let prefs = { lastSeen: 'everyone', onlineStatus: 'everyone' };
+    try {
+      const r = await query(
+        `SELECT last_seen_privacy, online_privacy FROM user_privacy WHERE user_id = $1`,
+        [targetUserId]
+      );
+      if (r.rowCount) {
+        prefs.lastSeen = r.rows[0].last_seen_privacy || 'everyone';
+        prefs.onlineStatus = r.rows[0].online_privacy || 'everyone';
+      }
+    } catch {
+      /* table may not exist yet */
+    }
+    let friends = false;
+    try {
+      const fl = await this.listFriends(viewerUserId);
+      friends = fl.some((f) => f.id === targetUserId);
+    } catch {
+      /* ignore */
+    }
+    const allowOnline =
+      prefs.onlineStatus === 'nobody' ? false : prefs.onlineStatus === 'contacts' ? friends : true;
+    const allowLastSeen =
+      prefs.lastSeen === 'nobody' ? false : prefs.lastSeen === 'contacts' ? friends : true;
+    return {
+      status: allowOnline ? p.status : 'offline',
+      lastSeen: allowLastSeen && p.status !== 'online' ? p.lastSeen || p.at : null,
+      onlineVisible: allowOnline,
+    };
+  },
+
+  async getPrivacy(userId) {
+    try {
+      const r = await query(`SELECT * FROM user_privacy WHERE user_id = $1`, [userId]);
+      if (r.rowCount) {
+        const row = r.rows[0];
+        return {
+          lastSeen: row.last_seen_privacy || 'everyone',
+          onlineStatus: row.online_privacy || 'everyone',
+          profilePhoto: row.profile_photo_privacy || 'everyone',
+          readReceipts: row.read_receipts !== false,
+        };
+      }
+    } catch {
+      /* table may not exist */
+    }
+    return {
+      lastSeen: 'everyone',
+      onlineStatus: 'everyone',
+      profilePhoto: 'everyone',
+      readReceipts: true,
+    };
+  },
+
+  async setPrivacy(userId, patch) {
+    const cur = await this.getPrivacy(userId);
+    const next = { ...cur, ...patch };
+    try {
+      await query(
+        `INSERT INTO user_privacy (user_id, last_seen_privacy, online_privacy, profile_photo_privacy, read_receipts)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (user_id) DO UPDATE SET
+           last_seen_privacy = EXCLUDED.last_seen_privacy,
+           online_privacy = EXCLUDED.online_privacy,
+           profile_photo_privacy = EXCLUDED.profile_photo_privacy,
+           read_receipts = EXCLUDED.read_receipts`,
+        [
+          userId,
+          next.lastSeen,
+          next.onlineStatus,
+          next.profilePhoto,
+          next.readReceipts !== false,
+        ]
+      );
+    } catch {
+      /* table may not exist */
+    }
+    return { data: next };
+  },
+
+  async isBlocked(blockerId, blockedId) {
+    return isBlocked(blockerId, blockedId);
+  },
+
+  async canCall(callerId, calleeId) {
+    if (callerId === calleeId) return false;
+    try {
+      const friends = await this.listFriends(callerId);
+      if (!friends.some((f) => f.id === calleeId)) return false;
+      if ((await isBlocked(callerId, calleeId)) || (await isBlocked(calleeId, callerId))) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  async saveCallRecord(record) {
+    try {
+      await query(
+        `INSERT INTO call_records (id, caller_id, callee_id, conversation_id, kind, status, started_at, ended_at, duration_ms)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, ended_at = EXCLUDED.ended_at, duration_ms = EXCLUDED.duration_ms`,
+        [
+          record.id || randomUUID(),
+          record.callerId,
+          record.calleeId,
+          record.conversationId || null,
+          record.kind || 'audio',
+          record.status || 'ended',
+          record.startedAt || now(),
+          record.endedAt || now(),
+          record.durationMs || 0,
+        ]
+      );
+    } catch {
+      /* table may not exist yet */
+    }
+    return { data: record };
+  },
+
+  async listCallHistory(userId, limit = 50) {
+    try {
+      const r = await query(
+        `SELECT c.*,
+                CASE WHEN c.caller_id = $1 THEN c.callee_id ELSE c.caller_id END AS peer_id,
+                p.username, p.display_name, p.avatar_url
+         FROM call_records c
+         LEFT JOIN profiles p ON p.user_id = CASE WHEN c.caller_id = $1 THEN c.callee_id ELSE c.caller_id END
+         WHERE c.caller_id = $1 OR c.callee_id = $1
+         ORDER BY c.started_at DESC
+         LIMIT $2`,
+        [userId, limit]
+      );
+      return r.rows.map((row) => ({
+        id: row.id,
+        callerId: row.caller_id,
+        calleeId: row.callee_id,
+        conversationId: row.conversation_id,
+        kind: row.kind,
+        status: row.status,
+        startedAt: row.started_at,
+        endedAt: row.ended_at,
+        durationMs: row.duration_ms,
+        direction: row.caller_id === userId ? 'outgoing' : 'incoming',
+        peer: {
+          id: row.peer_id,
+          username: row.username,
+          displayName: row.display_name,
+          avatarUrl: row.avatar_url,
+        },
+      }));
+    } catch {
+      return [];
+    }
   },
 };

@@ -3,6 +3,7 @@
  */
 
 import { store } from '../store/index.js';
+import { registerCallHandlers } from './calls.js';
 
 const userSockets = new Map();
 
@@ -58,13 +59,24 @@ export function setupSockets(io) {
   io.on('connection', (socket) => {
     const userId = socket.userId;
     addUserSocket(userId, socket.id);
+    socket.join(`user:${userId}`);
     store.setPresence(userId, 'online');
+
+    // Register WebRTC call signalling handlers (1:1 audio/video)
+    registerCallHandlers(io, socket);
 
     (async () => {
       try {
         const friends = await store.listFriends(userId);
         for (const f of friends) {
-          emitToUser(io, f.id, 'presence:update', { userId, status: 'online' });
+          const presence = store.getPresenceForViewer
+            ? await store.getPresenceForViewer(userId, f.id)
+            : { status: 'online', lastSeen: null };
+          emitToUser(io, f.id, 'presence:update', {
+            userId,
+            status: presence.status || 'online',
+            lastSeen: presence.lastSeen || null,
+          });
         }
       } catch {
         /* ignore */
@@ -74,6 +86,27 @@ export function setupSockets(io) {
     socket.emit('connection:ready', {
       userId,
       serverTime: new Date().toISOString(),
+    });
+
+    // Client can request presence for specific users (authorized: friends only)
+    socket.on('presence:subscribe', async (payload, ack) => {
+      const ids = Array.isArray(payload?.userIds) ? payload.userIds.slice(0, 100) : [];
+      const result = {};
+      try {
+        const friends = await store.listFriends(userId);
+        const friendSet = new Set(friends.map((f) => f.id));
+        for (const id of ids) {
+          if (!friendSet.has(id) && id !== userId) continue;
+          if (store.getPresenceForViewer) {
+            result[id] = await store.getPresenceForViewer(id, userId);
+          } else {
+            result[id] = store.getPresence(id);
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      if (typeof ack === 'function') ack({ data: result });
     });
 
     socket.on('conversation:join', async (payload, ack) => {
@@ -184,11 +217,18 @@ export function setupSockets(io) {
     socket.on('disconnect', async () => {
       removeUserSocket(userId, socket.id);
       if (!isUserOnline(userId)) {
-        store.setPresence(userId, 'offline');
+        const p = store.setPresence(userId, 'offline');
         try {
           const fl = await store.listFriends(userId);
           for (const f of fl) {
-            emitToUser(io, f.id, 'presence:update', { userId, status: 'offline' });
+            const visible = store.getPresenceForViewer
+              ? await store.getPresenceForViewer(userId, f.id)
+              : { status: 'offline', lastSeen: p?.lastSeen || p?.at };
+            emitToUser(io, f.id, 'presence:update', {
+              userId,
+              status: visible.status || 'offline',
+              lastSeen: visible.lastSeen || null,
+            });
           }
         } catch {
           /* ignore */

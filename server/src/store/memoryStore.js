@@ -13,6 +13,8 @@ const now = () => new Date().toISOString();
 const profiles = new Map();
 /** @type {Map<string, string>} username -> userId */
 const usernameIndex = new Map();
+/** @type {Map<string, string>} E.164-ish digits -> userId */
+const phoneIndex = new Map();
 /** @type {Map<string, object>} token -> { userId, expiresAt } */
 const sessions = new Map();
 /** @type {Map<string, object>} */
@@ -37,6 +39,10 @@ const attachments = new Map();
 const reactions = new Map();
 /** `${convId}:${userId}` -> { mutedUntil, archivedAt } */
 const convUserState = new Map();
+/** call history records (newest first) */
+const callRecords = [];
+/** userId -> privacy preferences */
+const privacyPrefs = new Map();
 
 function pairKey(a, b) {
   return a < b ? `${a}:${b}` : `${b}:${a}`;
@@ -72,8 +78,13 @@ function hashToken(token) {
 
 export const store = {
   // --- Auth / profiles ---
-  register({ username, displayName }) {
-    const uname = normalizeUsername(username);
+  register({ username, displayName, phone }) {
+    const digits = String(phone || '').replace(/\D/g, '');
+    let uname = normalizeUsername(username || '');
+    if (digits && !uname) {
+      // Derive a stable username from phone so existing username index still works
+      uname = `p${digits}`.slice(0, 30);
+    }
     if (!/^[a-z][a-z0-9_]{2,29}$/.test(uname)) {
       return {
         error: {
@@ -82,26 +93,47 @@ export const store = {
         },
       };
     }
+    if (digits && (digits.length < 8 || digits.length > 15)) {
+      return {
+        error: {
+          code: 'INVALID_PHONE',
+          message: 'Enter a valid phone number (8–15 digits)',
+        },
+      };
+    }
     if (usernameIndex.has(uname)) {
       return { error: { code: 'USERNAME_TAKEN', message: 'Username is already taken' } };
+    }
+    if (digits && phoneIndex.has(digits)) {
+      return { error: { code: 'PHONE_TAKEN', message: 'This phone number is already registered' } };
     }
     const userId = randomUUID();
     const profile = {
       id: userId,
       userId,
       username: uname,
-      displayName: (displayName || uname).trim().slice(0, 80),
+      displayName: (displayName || (digits ? digits : uname)).trim().slice(0, 80),
       avatarUrl: null,
       about: '',
+      phone: digits || null,
       phoneDiscoverable: false,
       createdAt: now(),
     };
     profiles.set(userId, profile);
     usernameIndex.set(uname, userId);
+    if (digits) phoneIndex.set(digits, userId);
     return { data: publicProfile(profile) };
   },
 
-  login(username) {
+  login(username, phone) {
+    const digits = String(phone || '').replace(/\D/g, '');
+    if (digits) {
+      const userId = phoneIndex.get(digits);
+      if (!userId) {
+        return { error: { code: 'USER_NOT_FOUND', message: 'No account with that phone number' } };
+      }
+      return { data: publicProfile(profiles.get(userId)) };
+    }
     const uname = normalizeUsername(username);
     const userId = usernameIndex.get(uname);
     if (!userId) {
@@ -846,11 +878,110 @@ export const store = {
 
   // --- Presence ---
   setPresence(userId, status) {
-    presence.set(userId, { status, at: now() });
+    const prev = presence.get(userId);
+    const at = now();
+    // When going offline, keep lastSeen; when online, clear "last seen" display time
+    const lastSeen =
+      status === 'offline' ? at : prev?.lastSeen || prev?.at || null;
+    presence.set(userId, { status, at, lastSeen: status === 'offline' ? at : lastSeen });
     return presence.get(userId);
   },
 
   getPresence(userId) {
-    return presence.get(userId) || { status: 'offline', at: null };
+    return presence.get(userId) || { status: 'offline', at: null, lastSeen: null };
+  },
+
+  /**
+   * Presence visible to viewer according to privacy settings.
+   * privacy.lastSeen: 'everyone' | 'contacts' | 'nobody'
+   */
+  getPresenceForViewer(targetUserId, viewerUserId) {
+    const p = this.getPresence(targetUserId);
+    const prefs = privacyPrefs.get(targetUserId) || { lastSeen: 'everyone', onlineStatus: 'everyone' };
+    const friends = areFriends(targetUserId, viewerUserId);
+
+    const allowOnline = (() => {
+      if (prefs.onlineStatus === 'nobody') return false;
+      if (prefs.onlineStatus === 'contacts') return friends;
+      return true;
+    })();
+    const allowLastSeen = (() => {
+      if (prefs.lastSeen === 'nobody') return false;
+      if (prefs.lastSeen === 'contacts') return friends;
+      return true;
+    })();
+
+    return {
+      status: allowOnline ? p.status : 'offline',
+      lastSeen: allowLastSeen && p.status !== 'online' ? p.lastSeen || p.at : null,
+      onlineVisible: allowOnline,
+    };
+  },
+
+  getPrivacy(userId) {
+    return privacyPrefs.get(userId) || {
+      lastSeen: 'everyone',
+      onlineStatus: 'everyone',
+      profilePhoto: 'everyone',
+      readReceipts: true,
+    };
+  },
+
+  setPrivacy(userId, patch) {
+    const cur = this.getPrivacy(userId);
+    const next = { ...cur, ...patch };
+    privacyPrefs.set(userId, next);
+    return { data: next };
+  },
+
+  // --- Blocks (expose for call authorization) ---
+  isBlocked(blockerId, blockedId) {
+    return isBlocked(blockerId, blockedId);
+  },
+
+  async canCall(callerId, calleeId) {
+    if (callerId === calleeId) return false;
+    if (!areFriends(callerId, calleeId)) return false;
+    if (isBlocked(callerId, calleeId) || isBlocked(calleeId, callerId)) return false;
+    return true;
+  },
+
+  // --- Call history ---
+  async saveCallRecord(record) {
+    callRecords.unshift({
+      id: record.id || randomUUID(),
+      callerId: record.callerId,
+      calleeId: record.calleeId,
+      conversationId: record.conversationId || null,
+      kind: record.kind || 'audio',
+      status: record.status || 'ended',
+      startedAt: record.startedAt || now(),
+      endedAt: record.endedAt || now(),
+      durationMs: record.durationMs || 0,
+    });
+    if (callRecords.length > 500) callRecords.length = 500;
+    return { data: callRecords[0] };
+  },
+
+  async listCallHistory(userId, limit = 50) {
+    return callRecords
+      .filter((r) => r.callerId === userId || r.calleeId === userId)
+      .slice(0, limit)
+      .map((r) => {
+        const peerId = r.callerId === userId ? r.calleeId : r.callerId;
+        const peer = profiles.get(peerId);
+        return {
+          ...r,
+          direction: r.callerId === userId ? 'outgoing' : 'incoming',
+          peer: peer
+            ? {
+                id: peer.userId,
+                username: peer.username,
+                displayName: peer.displayName,
+                avatarUrl: peer.avatarUrl,
+              }
+            : { id: peerId },
+        };
+      });
   },
 };
