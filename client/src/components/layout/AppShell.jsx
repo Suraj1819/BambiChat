@@ -1,10 +1,6 @@
+
 import { cn } from '@/lib/utils';
 
-/**
- * Responsive application shell.
- * Desktop: sidebar + main panel side-by-side.
- * Mobile: one primary view at a time (controlled by showSidebar).
- */
 export function AppShell({
   sidebar,
   children,
@@ -14,27 +10,26 @@ export function AppShell({
   return (
     <div
       className={cn(
-        'flex h-full w-full overflow-hidden bg-bambi-background',
+        'flex h-full min-h-0 w-full overflow-hidden',
+        'bg-bambi-background',
         className
       )}
     >
-      {/* Sidebar */}
       <aside
         className={cn(
-          'flex h-full w-full flex-col border-r border-bambi-border bg-bambi-surface',
-          'md:w-sidebar md:max-w-sidebar md:shrink-0',
-          // Mobile: hide when a conversation is open
-          showSidebar ? 'flex' : 'hidden md:flex'
+          'min-h-0 shrink-0 flex-col overflow-hidden',
+          'border-r border-bambi-border bg-bambi-surface',
+          'w-full md:!flex md:w-[320px] lg:w-[360px] xl:w-[400px]',
+          showSidebar ? 'flex' : 'hidden'
         )}
       >
         {sidebar}
       </aside>
 
-      {/* Main conversation panel */}
       <main
         className={cn(
-          'flex h-full min-w-0 flex-1 flex-col bg-bambi-background',
-          // Mobile: hide when showing list
+          'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+          'bg-bambi-background',
           showSidebar ? 'hidden md:flex' : 'flex'
         )}
       >

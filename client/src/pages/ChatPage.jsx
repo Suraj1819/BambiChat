@@ -1,5 +1,7 @@
+
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+
 import { AppShell } from '@/components/layout/AppShell';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { ConversationListItem } from '@/components/chat/ConversationListItem';
@@ -8,18 +10,31 @@ import { MessageTimeline } from '@/components/chat/MessageTimeline';
 import { MessageComposer } from '@/components/chat/MessageComposer';
 import { NoConversationSelected } from '@/components/chat/NoConversationSelected';
 import { EmptyState } from '@/components/ui/EmptyState';
+
 import { UserSearchDialog } from '@/components/dialogs/UserSearchDialog';
 import { FriendsPanel } from '@/components/dialogs/FriendsPanel';
 import { CreateGroupDialog } from '@/components/dialogs/CreateGroupDialog';
 import { GroupInfoPanel } from '@/components/dialogs/GroupInfoPanel';
 import { SettingsPanel } from '@/components/dialogs/SettingsPanel';
 import { ContactInfoPanel } from '@/components/dialogs/ContactInfoPanel';
+
 import { CallOverlay } from '@/features/calls/CallOverlay';
 import { useCall } from '@/features/calls/useCall';
-import { MessageSquarePlus, Loader2, Shield, Wifi, WifiOff, Search, X } from 'lucide-react';
+
+import {
+  MessageSquarePlus,
+  Loader2,
+  Shield,
+  Wifi,
+  WifiOff,
+  Search,
+  X,
+} from 'lucide-react';
+
 import { Button } from '@/components/ui/Button';
 import { api } from '@/lib/api';
 import { getSessionUser, clearSession } from '@/lib/session';
+
 import {
   connectSocket,
   disconnectSocket,
@@ -31,6 +46,7 @@ import {
   emitRead,
   getSocket,
 } from '@/lib/socket';
+
 import {
   ensureIdentity,
   encryptOutgoing,
@@ -38,12 +54,14 @@ import {
   clearSessionCache,
   PROTOCOL_VERSION,
 } from '@/features/encryption';
+
 import {
   encryptFile,
   decryptFile,
   isAllowedMime,
   MAX_FILE_BYTES,
 } from '@/features/encryption/fileCrypto.js';
+
 import {
   generateGroupKey,
   saveGroupKey,
@@ -53,10 +71,15 @@ import {
   wrapGroupKeyForMember,
   unwrapGroupKeyFromMember,
 } from '@/features/encryption/groupCrypto.js';
+
 import { parseDecryptedBody } from '@/features/encryption/messageCodec.js';
 
 function clientMsgId() {
   return `cmsg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function sameId(a, b) {
+  return a != null && b != null && String(a) === String(b);
 }
 
 export function ChatPage() {
@@ -76,6 +99,7 @@ export function ChatPage() {
   const [connected, setConnected] = useState(false);
   const [typingUsers, setTypingUsers] = useState({});
   const [error, setError] = useState('');
+
   const [searchOpen, setSearchOpen] = useState(false);
   const [friendsOpen, setFriendsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -92,26 +116,77 @@ export function ChatPage() {
   const peerKeyCache = useRef(new Map());
   const activeIdRef = useRef(null);
   const conversationsRef = useRef([]);
+
   activeIdRef.current = activeId;
   conversationsRef.current = conversations;
 
+  /*
+   * Always resolve the selected conversation from the current list.
+   * String-safe matching prevents ID type mismatches.
+   */
+  const activeConversation = conversations.find((conversation) =>
+    sameId(conversation.id, activeId)
+  );
+
+  const isGroup =
+    activeConversation?.isGroup ||
+    activeConversation?.type === 'group';
+
   const resolveCallPeer = useCallback((peerId) => {
-    const conv = conversationsRef.current.find((c) => c.peerUserId === peerId);
-    return conv ? { name: conv.name, avatarUrl: conv.avatarUrl } : null;
+    const conversation = conversationsRef.current.find((item) =>
+      sameId(item.peerUserId, peerId)
+    );
+
+    return conversation
+      ? {
+          name: conversation.name,
+          avatarUrl: conversation.avatarUrl,
+        }
+      : null;
   }, []);
+
   const calls = useCall({ resolvePeer: resolveCallPeer });
   const attachCalls = calls.attach;
 
+  /*
+   * Open a conversation and clear the previous conversation's UI state.
+   */
+  const openConversation = useCallback((conversationId) => {
+    if (conversationId == null) return;
+
+    setMessages([]);
+    setTypingUsers({});
+    setError('');
+    setContactOpen(false);
+    setGroupInfoOpen(false);
+    setChatSearchOpen(false);
+    setChatSearch('');
+    setActiveId(String(conversationId));
+  }, []);
+
+  const goBackToChats = useCallback(() => {
+    setActiveId(null);
+    setMessages([]);
+    setTypingUsers({});
+    setContactOpen(false);
+    setGroupInfoOpen(false);
+    setChatSearchOpen(false);
+    setChatSearch('');
+  }, []);
+
   const initCrypto = useCallback(async (uid) => {
     setCryptoReady(false);
+
     try {
       const identity = await ensureIdentity(uid);
+
       await api.publishIdentityKey({
         publicKeyB64: identity.publicKeyB64,
         deviceId: identity.deviceId,
         registrationId: identity.registrationId,
         protocolVersion: PROTOCOL_VERSION,
       });
+
       setCryptoReady(true);
     } catch (e) {
       setError(`Encryption init failed: ${e.message}`);
@@ -121,335 +196,641 @@ export function ChatPage() {
 
   const loadList = useCallback(async () => {
     setLoadingList(true);
-    setError('');
+
     try {
-      const [meRes, convRes, friendsRes, requestsRes] = await Promise.all([
-        api.me(),
-        api.listConversations(),
-        api.listFriends(),
-        api.listFriendRequests(),
-      ]);
-      const localProfile = (() => {
-        try {
-          return JSON.parse(localStorage.getItem(`bambi-profile-${meRes.data?.id}`) || '{}');
-        } catch {
-          return {};
-        }
-      })();
-      setMe({ ...meRes.data, ...localProfile });
-      setConversations(convRes.data || []);
+      const [meRes, convRes, friendsRes, requestsRes] =
+        await Promise.all([
+          api.me(),
+          api.listConversations(),
+          api.listFriends(),
+          api.listFriendRequests(),
+        ]);
+
+      const profileId = meRes.data?.id;
+
+      let localProfile = {};
+
+      try {
+        localProfile = JSON.parse(
+          localStorage.getItem(`bambi-profile-${profileId}`) || '{}'
+        );
+      } catch {
+        localProfile = {};
+      }
+
+      const nextConversations = convRes.data || [];
+
+      setMe({
+        ...meRes.data,
+        ...localProfile,
+      });
+
+      setConversations(nextConversations);
       setFriends(friendsRes.data || []);
       setFriendRequests(requestsRes.data?.incoming || []);
+
+      /*
+       * Do not reset activeId during refresh.
+       * If the selected conversation is temporarily absent from the list,
+       * the UI safely falls back to the conversation list on mobile.
+       */
     } catch (e) {
       if (e.status === 401) {
         clearSession();
         navigate('/auth', { replace: true });
         return;
       }
-      setError(e.message || 'Failed to load');
+
+      setError(e.message || 'Failed to load conversations');
     } finally {
       setLoadingList(false);
     }
   }, [navigate]);
 
-
   useEffect(() => {
     if (!userId) return undefined;
+
     let active = true;
+
     const refreshRequests = async () => {
       try {
         const result = await api.listFriendRequests();
-        if (active) setFriendRequests(result.data?.incoming || []);
+
+        if (active) {
+          setFriendRequests(result.data?.incoming || []);
+        }
       } catch {
-        // Keep the last known request count if a background refresh fails.
+        // Preserve the last known requests if a refresh fails.
       }
     };
+
     const intervalId = window.setInterval(refreshRequests, 30000);
+
     return () => {
       active = false;
       window.clearInterval(intervalId);
     };
   }, [userId]);
 
-  async function resolvePeerPub(peerForKey) {
-    let peerPub = peerKeyCache.current.get(peerForKey);
-    if (!peerPub && peerForKey) {
-      const res = await api.getIdentityKey(peerForKey);
-      peerPub = res.data?.publicKeyB64;
-      if (peerPub) peerKeyCache.current.set(peerForKey, peerPub);
+  async function resolvePeerPub(peerForKey, { force = false } = {}) {
+    if (!peerForKey) return null;
+
+    const cacheKey = String(peerForKey);
+
+    if (!force) {
+      const cached = peerKeyCache.current.get(cacheKey);
+      if (cached) return cached;
     }
-    return peerPub;
+
+    try {
+      const response = await api.getIdentityKey(peerForKey);
+      const publicKey = response.data?.publicKeyB64 || null;
+
+      if (publicKey) {
+        peerKeyCache.current.set(cacheKey, publicKey);
+      } else {
+        peerKeyCache.current.delete(cacheKey);
+      }
+
+      return publicKey;
+    } catch {
+      peerKeyCache.current.delete(cacheKey);
+      return null;
+    }
   }
 
-  async function decryptRawMessage(m, conv) {
-    const isGroup = conv?.isGroup || conv?.type === 'group';
-    const peerId = conv?.peerUserId;
+  async function decryptRawMessage(message, conversation) {
+    const groupMessage =
+      conversation?.isGroup ||
+      conversation?.type === 'group' ||
+      message.protocolVersion === 'bambi-e2ee-v1-group';
 
-    // Group messages use group AES key
-    if (isGroup || m.protocolVersion === 'bambi-e2ee-v1-group') {
-      // First try: may be key distribution wrapped as pairwise ciphertext in older path
-      // Primary: group ciphertext
-      let plain;
-      const gk = await loadGroupKey(m.conversationId || conv?.id);
-      if (gk?.key) {
-        const aad = `${m.conversationId || conv?.id}|${m.senderId}|${m.clientMessageId}`;
-        plain = await decryptGroupMessage(gk.key, m.ciphertext, aad);
+    const conversationId =
+      message.conversationId || conversation?.id || activeIdRef.current;
+
+    if (groupMessage) {
+      let plaintext;
+
+      const groupKey = await loadGroupKey(conversationId);
+
+      if (groupKey?.key) {
+        const aad = `${conversationId}|${message.senderId}|${message.clientMessageId}`;
+
+        plaintext = await decryptGroupMessage(
+          groupKey.key,
+          message.ciphertext,
+          aad
+        );
       } else {
-        // Attempt pairwise decrypt for key-dist bootstrap
         try {
-          const peerForKey = m.senderId === userId ? null : m.senderId;
-          if (peerForKey) {
-            const peerPub = await resolvePeerPub(peerForKey);
-            plain = await decryptIncoming({
+          const senderId =
+            sameId(message.senderId, userId) ? null : message.senderId;
+
+          if (senderId) {
+            const senderPublicKey = await resolvePeerPub(senderId);
+
+            plaintext = await decryptIncoming({
               localUserId: userId,
-              peerUserId: peerForKey,
-              peerPublicKeyB64: peerPub,
-              conversationId: m.conversationId || conv?.id,
-              clientMessageId: m.clientMessageId,
-              senderId: m.senderId,
-              ciphertext: m.ciphertext,
+              peerUserId: senderId,
+              peerPublicKeyB64: senderPublicKey,
+              conversationId,
+              clientMessageId: message.clientMessageId,
+              senderId: message.senderId,
+              ciphertext: message.ciphertext,
             });
           } else {
-            plain = '[no group key yet]';
+            plaintext = '[no group key yet]';
           }
         } catch {
-          plain = '[no group key yet]';
+          plaintext = '[no group key yet]';
         }
       }
 
-      const parsed = parseDecryptedBody(plain);
+      const parsed = parseDecryptedBody(plaintext);
+
       if (parsed.keyDist && parsed.keyDist.wrapped) {
-        // Find our wrap
-        const mine = (parsed.keyDist.wrapped || []).find((w) => w.userId === userId);
-        if (mine && m.senderId !== userId) {
+        const myWrappedKey = parsed.keyDist.wrapped.find((item) =>
+          sameId(item.userId, userId)
+        );
+
+        if (myWrappedKey && !sameId(message.senderId, userId)) {
           try {
-            const senderPub = await resolvePeerPub(m.senderId);
+            const senderPublicKey = await resolvePeerPub(message.senderId);
+
             const keyB64 = await unwrapGroupKeyFromMember(
               userId,
-              m.senderId,
-              senderPub,
-              mine
+              message.senderId,
+              senderPublicKey,
+              myWrappedKey
             );
+
             await saveGroupKey(
-              m.conversationId || conv?.id,
+              conversationId,
               keyB64,
               parsed.keyDist.epoch || 1
             );
           } catch {
-            /* ignore */
+            // Keep the message stream working if key bootstrap fails.
           }
         }
+
         return {
-          id: m.id,
-          clientMessageId: m.clientMessageId,
-          senderId: m.senderId,
+          id: message.id,
+          clientMessageId: message.clientMessageId,
+          senderId: message.senderId,
           body: 'Group key updated',
-          createdAt: m.createdAt,
-          status: m.status,
+          createdAt: message.createdAt,
+          status: message.status,
           encrypted: true,
           system: true,
         };
       }
 
       return {
-        id: m.id,
-        clientMessageId: m.clientMessageId,
-        senderId: m.senderId,
+        id: message.id,
+        clientMessageId: message.clientMessageId,
+        senderId: message.senderId,
         body: parsed.body,
         attachment: parsed.attachment,
-        createdAt: m.createdAt,
-        status: m.status,
+        createdAt: message.createdAt,
+        status: message.status,
         encrypted: true,
       };
     }
 
-    // Direct message path
-    const peerForKey = m.senderId === userId ? peerId : m.senderId;
-    const peerPub = await resolvePeerPub(peerForKey);
-    const plain = await decryptIncoming({
+    const peerForKey = sameId(message.senderId, userId)
+      ? conversation?.peerUserId
+      : message.senderId;
+
+    if (!peerForKey) {
+      return {
+        id: message.id,
+        clientMessageId: message.clientMessageId,
+        senderId: message.senderId,
+        body: '[missing peer]',
+        createdAt: message.createdAt,
+        status: message.status,
+        encrypted: true,
+      };
+    }
+
+    let peerPublicKey = await resolvePeerPub(peerForKey);
+
+    let plaintext = await decryptIncoming({
       localUserId: userId,
       peerUserId: peerForKey,
-      peerPublicKeyB64: peerPub,
-      conversationId: m.conversationId || activeIdRef.current,
-      clientMessageId: m.clientMessageId,
-      senderId: m.senderId,
-      ciphertext: m.ciphertext,
+      peerPublicKeyB64: peerPublicKey,
+      conversationId,
+      clientMessageId: message.clientMessageId,
+      senderId: message.senderId,
+      ciphertext: message.ciphertext,
     });
-    const { body, attachment } = parseDecryptedBody(plain);
+
+    if (
+      plaintext === '[decryption failed]' ||
+      plaintext === '[no peer key — ask them to open the app once]' ||
+      plaintext === '[no peer key]'
+    ) {
+      peerPublicKey = await resolvePeerPub(peerForKey, { force: true });
+
+      plaintext = await decryptIncoming({
+        localUserId: userId,
+        peerUserId: peerForKey,
+        peerPublicKeyB64: peerPublicKey,
+        conversationId,
+        clientMessageId: message.clientMessageId,
+        senderId: message.senderId,
+        ciphertext: message.ciphertext,
+      });
+    }
+
+    const parsed = parseDecryptedBody(plaintext);
+
     return {
-      id: m.id,
-      clientMessageId: m.clientMessageId,
-      senderId: m.senderId,
-      body,
-      attachment,
-      createdAt: m.createdAt,
-      status: m.status,
+      id: message.id,
+      clientMessageId: message.clientMessageId,
+      senderId: message.senderId,
+      body: parsed.body,
+      attachment: parsed.attachment,
+      createdAt: message.createdAt,
+      status: message.status,
       encrypted: true,
     };
   }
 
+  /*
+   * Initialise encryption and socket listeners.
+   */
   useEffect(() => {
     if (!userId) {
       navigate('/auth', { replace: true });
-      return;
+      return undefined;
     }
+
     let cancelled = false;
     let detachCalls = null;
+    let socket = null;
+
+    const onConnect = () => setConnected(true);
+    const onDisconnect = () => setConnected(false);
+
+    const onNewMessage = async ({ message }) => {
+      if (!message) return;
+
+      if (!sameId(message.senderId, userId)) {
+        emitDelivered(message.conversationId, message.id);
+      }
+
+      if (!sameId(message.conversationId, activeIdRef.current)) {
+        loadList();
+        return;
+      }
+
+      const conversation = conversationsRef.current.find((item) =>
+        sameId(item.id, message.conversationId)
+      );
+
+      try {
+        const decrypted = await decryptRawMessage(message, conversation);
+
+        setMessages((previous) => {
+          const exists = previous.some(
+            (item) =>
+              sameId(item.id, decrypted.id) ||
+              (
+                item.clientMessageId &&
+                item.clientMessageId === decrypted.clientMessageId
+              )
+          );
+
+          if (exists) {
+            return previous.map((item) =>
+              sameId(item.id, decrypted.id) ||
+              (
+                item.clientMessageId &&
+                item.clientMessageId === decrypted.clientMessageId
+              )
+                ? { ...item, ...decrypted }
+                : item
+            );
+          }
+
+          return [...previous, decrypted];
+        });
+      } catch {
+        // Ignore malformed messages without breaking the socket.
+      }
+
+      loadList();
+    };
+
+    const onMessageNotify = () => loadList();
+
+    const onMessageReceipt = ({ messageId, status }) => {
+      setMessages((previous) =>
+        previous.map((message) =>
+          sameId(message.id, messageId)
+            ? { ...message, status }
+            : message
+        )
+      );
+    };
+
+    const onTypingUpdate = ({
+      conversationId,
+      userId: typingUserId,
+      username,
+      typing,
+    }) => {
+      if (
+        !sameId(conversationId, activeIdRef.current) ||
+        sameId(typingUserId, userId)
+      ) {
+        return;
+      }
+
+      setTypingUsers((previous) => {
+        const next = { ...previous };
+
+        if (typing) {
+          next[typingUserId] = username;
+        } else {
+          delete next[typingUserId];
+        }
+
+        return next;
+      });
+    };
+
+    const applyPresence = (peerId, status, lastSeen) => {
+      setConversations((previous) =>
+        previous.map((conversation) =>
+          sameId(conversation.peerUserId, peerId)
+            ? {
+                ...conversation,
+                isOnline: status === 'online',
+                lastSeen:
+                  status === 'online'
+                    ? null
+                    : lastSeen || conversation.lastSeen || null,
+              }
+            : conversation
+        )
+      );
+    };
+
+    const onPresenceUpdate = ({ userId: peerId, status, lastSeen }) => {
+      applyPresence(peerId, status, lastSeen);
+    };
+
+    const onPresenceSnapshot = ({ presence }) => {
+      if (!presence || typeof presence !== 'object') return;
+
+      setConversations((previous) =>
+        previous.map((conversation) => {
+          const peerId = conversation.peerUserId;
+          if (!peerId || !presence[peerId]) return conversation;
+
+          const currentPresence = presence[peerId];
+
+          return {
+            ...conversation,
+            isOnline: currentPresence.status === 'online',
+            lastSeen:
+              currentPresence.status === 'online'
+                ? null
+                : currentPresence.lastSeen || null,
+          };
+        })
+      );
+    };
+
+    const requestPresence = () => {
+      const ids = conversationsRef.current
+        .map((conversation) => conversation.peerUserId)
+        .filter(Boolean);
+
+      if (!ids.length || !socket?.connected) return;
+
+      socket.emit('presence:subscribe', { userIds: ids }, (response) => {
+        const data = response?.data;
+        if (!data) return;
+
+        setConversations((previous) =>
+          previous.map((conversation) => {
+            const peerId = conversation.peerUserId;
+            if (!peerId || !data[peerId]) return conversation;
+
+            const presence = data[peerId];
+
+            return {
+              ...conversation,
+              isOnline: presence.status === 'online',
+              lastSeen:
+                presence.status === 'online'
+                  ? null
+                  : presence.lastSeen || null,
+            };
+          })
+        );
+      });
+    };
+
+    const onConnectionReady = () => setConnected(true);
+
     (async () => {
       await initCrypto(userId);
       if (cancelled) return;
+
       await loadList();
       if (cancelled) return;
 
-      const s = connectSocket();
-      if (!s) return;
+      socket = connectSocket();
+      if (!socket) return;
 
-      detachCalls = attachCalls(s);
-      const onConnect = () => setConnected(true);
-      const onDisconnect = () => setConnected(false);
-      s.on('connect', onConnect);
-      s.on('disconnect', onDisconnect);
-      s.on('connection:ready', () => setConnected(true));
-      if (s.connected) setConnected(true);
+      detachCalls = attachCalls(socket);
 
-      s.on('message:new', async ({ message: m }) => {
-        if (!m) return;
-        if (m.senderId !== userId) emitDelivered(m.conversationId, m.id);
-        if (m.conversationId !== activeIdRef.current) {
-          loadList();
-          return;
-        }
-        const conv = conversationsRef.current.find((c) => c.id === m.conversationId);
-        try {
-          const dec = await decryptRawMessage(m, conv);
-          setMessages((prev) => {
-            if (prev.some((x) => x.id === dec.id || x.clientMessageId === dec.clientMessageId)) {
-              return prev.map((x) =>
-                x.clientMessageId === dec.clientMessageId || x.id === dec.id ? dec : x
-              );
-            }
-            return [...prev, dec];
-          });
-        } catch {
-          /* ignore */
-        }
-        loadList();
-      });
+      socket.on('connect', onConnect);
+      socket.on('disconnect', onDisconnect);
+      socket.on('connection:ready', onConnectionReady);
+      socket.on('message:new', onNewMessage);
+      socket.on('message:notify', onMessageNotify);
+      socket.on('message:receipt', onMessageReceipt);
+      socket.on('typing:update', onTypingUpdate);
+      socket.on('presence:update', onPresenceUpdate);
+      socket.on('presence:snapshot', onPresenceSnapshot);
+      socket.on('connect', requestPresence);
 
-      s.on('message:notify', () => loadList());
-      s.on('message:receipt', ({ messageId, status }) => {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === messageId ? { ...m, status } : m))
-        );
-      });
-      s.on('typing:update', ({ conversationId, userId: uid, username, typing }) => {
-        if (conversationId !== activeIdRef.current || uid === userId) return;
-        setTypingUsers((prev) => {
-          const next = { ...prev };
-          if (typing) next[uid] = username;
-          else delete next[uid];
-          return next;
-        });
-      });
-      s.on('presence:update', ({ userId: uid, status }) => {
-        setConversations((prev) =>
-          prev.map((c) =>
-            c.peerUserId === uid ? { ...c, isOnline: status === 'online' } : c
-          )
-        );
-      });
+      if (socket.connected) {
+        setConnected(true);
+        requestPresence();
+      }
     })();
 
     return () => {
       cancelled = true;
+
+      if (socket) {
+        socket.off('connect', onConnect);
+        socket.off('disconnect', onDisconnect);
+        socket.off('connection:ready', onConnectionReady);
+        socket.off('message:new', onNewMessage);
+        socket.off('message:notify', onMessageNotify);
+        socket.off('message:receipt', onMessageReceipt);
+        socket.off('typing:update', onTypingUpdate);
+        socket.off('presence:update', onPresenceUpdate);
+        socket.off('presence:snapshot', onPresenceSnapshot);
+        socket.off('connect', requestPresence);
+      }
+
       detachCalls?.();
       disconnectSocket();
     };
   }, [userId, initCrypto, loadList, navigate, attachCalls]);
 
-  // Reset per-conversation UI when switching chats.
-  useEffect(() => {
-    setContactOpen(false);
-    setChatSearchOpen(false);
-    setChatSearch('');
-  }, [activeId]);
-
+  /*
+   * Load messages whenever the selected conversation changes.
+   */
   useEffect(() => {
     if (!activeId || !userId) {
       setMessages([]);
       setTypingUsers({});
-      return;
+      setLoadingMessages(false);
+      return undefined;
     }
+
     let cancelled = false;
+    const conversationId = activeId;
+
+    setMessages([]);
+    setTypingUsers({});
+    setLoadingMessages(true);
+
     (async () => {
-      setLoadingMessages(true);
-      await joinConversation(activeId);
       try {
-        const res = await api.getMessages(activeId);
-        const raw = res.data || [];
-        const conv = conversationsRef.current.find((c) => c.id === activeId);
-        const decrypted = [];
-        const toAck = [];
-        for (const m of raw) {
+        await joinConversation(conversationId);
+
+        const response = await api.getMessages(conversationId);
+        const rawMessages = response.data || [];
+
+        const conversation = conversationsRef.current.find((item) =>
+          sameId(item.id, conversationId)
+        );
+
+        const decryptedMessages = [];
+        const unreadMessageIds = [];
+
+        for (const message of rawMessages) {
           try {
-            decrypted.push(await decryptRawMessage({ ...m, conversationId: activeId }, conv));
+            const decrypted = await decryptRawMessage(
+              { ...message, conversationId },
+              conversation
+            );
+
+            decryptedMessages.push(decrypted);
           } catch {
-            decrypted.push({
-              id: m.id,
-              senderId: m.senderId,
+            decryptedMessages.push({
+              id: message.id,
+              clientMessageId: message.clientMessageId,
+              senderId: message.senderId,
               body: '[decryption failed]',
-              createdAt: m.createdAt,
-              status: m.status,
+              createdAt: message.createdAt,
+              status: message.status,
               encrypted: true,
             });
           }
-          if (m.senderId !== userId) toAck.push(m.id);
-        }
-        if (!cancelled) {
-          setMessages(decrypted);
-          if (toAck.length) {
-            toAck.forEach((id) => emitDelivered(activeId, id));
-            emitRead(activeId, toAck);
+
+          if (!sameId(message.senderId, userId)) {
+            unreadMessageIds.push(message.id);
           }
         }
+
+        if (cancelled) return;
+
+        /*
+         * Prevent stale requests from replacing the messages of a newer chat.
+         */
+        if (!sameId(activeIdRef.current, conversationId)) return;
+
+        setMessages(decryptedMessages);
+
+        if (unreadMessageIds.length) {
+          unreadMessageIds.forEach((messageId) =>
+            emitDelivered(conversationId, messageId)
+          );
+
+          emitRead(conversationId, unreadMessageIds);
+        }
       } catch (e) {
-        if (!cancelled) setError(e.message);
+        if (!cancelled) {
+          setError(e.message || 'Failed to load messages');
+        }
       } finally {
-        if (!cancelled) setLoadingMessages(false);
+        if (!cancelled) {
+          setLoadingMessages(false);
+        }
       }
     })();
+
     return () => {
       cancelled = true;
-      leaveConversation(activeId);
+      leaveConversation(conversationId);
     };
   }, [activeId, userId]);
 
-  const filtered = conversations.filter((c) => {
-    if (filter === 'unread' && !(c.unreadCount > 0)) return false;
-    if (filter === 'groups' && !(c.isGroup || c.type === 'group')) return false;
-    if (!searchQuery.trim()) return true;
-    return c.name?.toLowerCase().includes(searchQuery.toLowerCase());
-  });
-  const unreadTotal = conversations.reduce((n, c) => n + (c.unreadCount || 0), 0);
-  const activeConversation = conversations.find((c) => c.id === activeId);
-  const isGroup = activeConversation?.isGroup || activeConversation?.type === 'group';
-  const typingLabel = Object.values(typingUsers).join(', ');
+  const filtered = conversations.filter((conversation) => {
+    if (filter === 'unread' && !(conversation.unreadCount > 0)) {
+      return false;
+    }
 
+    if (
+      filter === 'groups' &&
+      !(conversation.isGroup || conversation.type === 'group')
+    ) {
+      return false;
+    }
+
+    if (!searchQuery.trim()) return true;
+
+    return (conversation.name || '')
+      .toLowerCase()
+      .includes(searchQuery.trim().toLowerCase());
+  });
+
+  const unreadTotal = conversations.reduce(
+    (total, conversation) => total + (conversation.unreadCount || 0),
+    0
+  );
+
+  const typingLabel = Object.values(typingUsers).join(', ');
   const trimmedSearch = chatSearch.trim().toLowerCase();
+
   const visibleMessages = trimmedSearch
-    ? messages.filter((m) => (m.body || '').toLowerCase().includes(trimmedSearch) || (m.attachment?.filename || '').toLowerCase().includes(trimmedSearch))
+    ? messages.filter((message) => {
+        const body = (message.body || '').toLowerCase();
+        const filename = (
+          message.attachment?.filename || ''
+        ).toLowerCase();
+
+        return (
+          body.includes(trimmedSearch) ||
+          filename.includes(trimmedSearch)
+        );
+      })
     : messages;
 
-  const callsDisabledReason = calls.call.status !== 'idle'
-    ? 'You are already on a call'
-    : !connected
-      ? 'You are offline'
-      : !activeConversation?.peerUserId
-        ? 'Calls are not available for this chat'
-        : '';
+  const callsDisabledReason =
+    calls.call.status !== 'idle'
+      ? 'You are already on a call'
+      : !connected
+        ? 'You are offline'
+        : !activeConversation?.peerUserId
+          ? 'Calls are not available for this chat'
+          : '';
 
   const startCallWithActive = (kind) => {
     if (!activeConversation?.peerUserId || callsDisabledReason) return;
+
     calls.startCall({
       peer: {
         id: activeConversation.peerUserId,
@@ -461,58 +842,75 @@ export function ChatPage() {
     });
   };
 
-  async function distributeGroupKey(conversationId, memberIds, groupKeyB64, epoch = 1) {
+  async function distributeGroupKey(
+    conversationId,
+    memberIds,
+    groupKeyB64,
+    epoch = 1
+  ) {
     const wrapped = [];
-    for (const mid of memberIds) {
-      if (mid === userId) continue;
+
+    for (const memberId of memberIds) {
+      if (sameId(memberId, userId)) continue;
+
       try {
-        const pub = await resolvePeerPub(mid);
-        if (!pub) continue;
-        const w = await wrapGroupKeyForMember(userId, mid, pub, groupKeyB64);
-        wrapped.push(w);
+        const publicKey = await resolvePeerPub(memberId);
+        if (!publicKey) continue;
+
+        const wrappedKey = await wrapGroupKeyForMember(
+          userId,
+          memberId,
+          publicKey,
+          groupKeyB64
+        );
+
+        wrapped.push(wrappedKey);
       } catch {
-        /* skip member without keys */
+        // Continue distributing to other members.
       }
     }
+
     const payload = {
       type: 'group_key_dist',
       epoch,
       wrapped,
     };
-    // Also encrypt for each member as pairwise so they can bootstrap without group key
-    // Send one group-encrypted message if we already have key, plus pairwise to each
-    for (const mid of memberIds) {
-      if (mid === userId) continue;
+
+    for (const memberId of memberIds) {
+      if (sameId(memberId, userId)) continue;
+
       try {
-        const pub = await resolvePeerPub(mid);
-        if (!pub) continue;
-        const cmId = clientMsgId();
-        const plain = JSON.stringify(payload);
-        // Fake a temporary DM-style envelope using pairwise to deliver key
-        // Store as message in group conversation with pairwise ciphertext marked for that bootstrap
+        const publicKey = await resolvePeerPub(memberId);
+        if (!publicKey) continue;
+
+        const messageClientId = clientMsgId();
+        const plaintext = JSON.stringify(payload);
+
         const encrypted = await encryptOutgoing({
           localUserId: userId,
-          peerUserId: mid,
-          peerPublicKeyB64: pub,
+          peerUserId: memberId,
+          peerPublicKeyB64: publicKey,
           conversationId,
-          clientMessageId: cmId,
-          plaintext: plain,
+          clientMessageId: messageClientId,
+          plaintext,
         });
+
         const body = {
           conversationId,
           ciphertext: encrypted.ciphertext,
           protocolVersion: encrypted.protocolVersion,
-          clientMessageId: cmId,
+          clientMessageId: messageClientId,
           senderDeviceId: 1,
           messageType: 'key_exchange',
         };
+
         if (getSocket()?.connected) {
           await socketSendMessage(body);
         } else {
           await api.sendEncryptedMessage(conversationId, body);
         }
       } catch {
-        /* continue */
+        // Continue with other group members.
       }
     }
   }
@@ -520,24 +918,45 @@ export function ChatPage() {
   const handleGroupCreated = async (group) => {
     try {
       const { keyB64 } = await generateGroupKey();
+
       await saveGroupKey(group.id, keyB64, 1);
-      const memberIds = (group.members || []).map((m) => m.userId);
+
+      const memberIds = (group.members || []).map(
+        (member) => member.userId
+      );
+
       await distributeGroupKey(group.id, memberIds, keyB64, 1);
       await loadList();
-      setActiveId(group.id);
+
+      openConversation(group.id);
     } catch (e) {
-      setError(e.message);
+      setError(e.message || 'Failed to initialise group encryption');
+
       await loadList();
-      setActiveId(group.id);
+      openConversation(group.id);
     }
   };
 
-  const sendEncryptedPayload = async (plaintextObj, optimisticBody, optimisticAttachment) => {
-    const conv = conversations.find((c) => c.id === activeId);
-    const cmId = clientMsgId();
-    const optimistic = {
-      id: `local-${cmId}`,
-      clientMessageId: cmId,
+  const sendEncryptedPayload = async (
+    plaintextObject,
+    optimisticBody,
+    optimisticAttachment
+  ) => {
+    const conversation = conversationsRef.current.find((item) =>
+      sameId(item.id, activeIdRef.current)
+    );
+
+    const conversationId = activeIdRef.current;
+
+    if (!conversationId) {
+      throw new Error('Select a conversation first');
+    }
+
+    const messageClientId = clientMsgId();
+
+    const optimisticMessage = {
+      id: `local-${messageClientId}`,
+      clientMessageId: messageClientId,
       senderId: userId,
       body: optimisticBody,
       attachment: optimisticAttachment,
@@ -545,45 +964,82 @@ export function ChatPage() {
       status: 'sending',
       encrypted: true,
     };
-    setMessages((prev) => [...prev, optimistic]);
 
-    const plain =
-      typeof plaintextObj === 'string' ? plaintextObj : JSON.stringify(plaintextObj);
+    setMessages((previous) => [...previous, optimisticMessage]);
+
+    const plaintext =
+      typeof plaintextObject === 'string'
+        ? plaintextObject
+        : JSON.stringify(plaintextObject);
 
     let payload;
-    if (conv?.isGroup || conv?.type === 'group') {
-      let gk = await loadGroupKey(activeId);
-      if (!gk) {
-        // Create key if missing (creator offline case)
-        const gen = await generateGroupKey();
-        await saveGroupKey(activeId, gen.keyB64, 1);
-        gk = await loadGroupKey(activeId);
+
+    if (
+      conversation?.isGroup ||
+      conversation?.type === 'group'
+    ) {
+      let groupKey = await loadGroupKey(conversationId);
+
+      if (!groupKey) {
+        const generated = await generateGroupKey();
+
+        await saveGroupKey(
+          conversationId,
+          generated.keyB64,
+          1
+        );
+
+        groupKey = await loadGroupKey(conversationId);
       }
-      const aad = `${activeId}|${userId}|${cmId}`;
-      const enc = await encryptGroupMessage(gk.key, plain, aad);
+
+      if (!groupKey?.key) {
+        throw new Error('Group encryption key is not available');
+      }
+
+      const aad = `${conversationId}|${userId}|${messageClientId}`;
+
+      const encrypted = await encryptGroupMessage(
+        groupKey.key,
+        plaintext,
+        aad
+      );
+
       payload = {
-        conversationId: activeId,
-        ciphertext: enc.ciphertext,
-        protocolVersion: enc.protocolVersion,
-        clientMessageId: cmId,
+        conversationId,
+        ciphertext: encrypted.ciphertext,
+        protocolVersion: encrypted.protocolVersion,
+        clientMessageId: messageClientId,
         senderDeviceId: 1,
         messageType: optimisticAttachment ? 'attachment' : 'text',
       };
     } else {
-      const peerId = conv?.peerUserId;
-      if (!peerId) throw new Error('Cannot determine peer for encryption');
-      const peerPub = await resolvePeerPub(peerId);
-      if (!peerPub) throw new Error('Peer has not published encryption keys yet');
+      const peerId = conversation?.peerUserId;
+
+      if (!peerId) {
+        throw new Error('Cannot determine peer for encryption');
+      }
+
+      const peerPublicKey = await resolvePeerPub(peerId, {
+        force: true,
+      });
+
+      if (!peerPublicKey) {
+        throw new Error(
+          'The other person has not opened Bambi yet. Ask them to open the app once.'
+        );
+      }
+
       const encrypted = await encryptOutgoing({
         localUserId: userId,
         peerUserId: peerId,
-        peerPublicKeyB64: peerPub,
-        conversationId: activeId,
-        clientMessageId: cmId,
-        plaintext: plain,
+        peerPublicKeyB64: peerPublicKey,
+        conversationId,
+        clientMessageId: messageClientId,
+        plaintext,
       });
+
       payload = {
-        conversationId: activeId,
+        conversationId,
         ciphertext: encrypted.ciphertext,
         protocolVersion: encrypted.protocolVersion,
         clientMessageId: encrypted.clientMessageId,
@@ -592,59 +1048,108 @@ export function ChatPage() {
       };
     }
 
-    let saved;
-    if (getSocket()?.connected) {
-      saved = await socketSendMessage(payload);
-    } else {
-      const res = await api.sendEncryptedMessage(activeId, payload);
-      saved = res.data;
+    let savedMessage;
+
+    try {
+      if (getSocket()?.connected) {
+        savedMessage = await socketSendMessage(payload);
+      } else {
+        const response = await api.sendEncryptedMessage(
+          conversationId,
+          payload
+        );
+
+        savedMessage = response.data;
+      }
+    } catch (e) {
+      setMessages((previous) =>
+        previous.map((message) =>
+          message.clientMessageId === messageClientId
+            ? { ...message, status: 'failed' }
+            : message
+        )
+      );
+
+      throw e;
     }
 
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.clientMessageId === cmId ? { ...m, id: saved.id, status: 'sent' } : m
+    setMessages((previous) =>
+      previous.map((message) =>
+        message.clientMessageId === messageClientId
+          ? {
+              ...message,
+              id: savedMessage.id,
+              status: 'sent',
+            }
+          : message
       )
     );
+
     loadList();
   };
 
   const handleSend = async (text) => {
     if (!activeId || !cryptoReady || !userId) return false;
+
     emitTyping(activeId, false);
+
     try {
       await sendEncryptedPayload(text, text, null);
       return true;
     } catch (e) {
-      setError(e.message);
-      setMessages((prev) =>
-        prev.map((m) => (m.status === 'sending' ? { ...m, status: 'failed' } : m))
-      );
+      setError(e.message || 'Message could not be sent');
       return false;
     }
   };
 
   const handleAttach = async (file) => {
     if (!activeId || !cryptoReady || !userId) return;
+
     if (file.size > MAX_FILE_BYTES) {
-      setError(`File too large (max ${MAX_FILE_BYTES / (1024 * 1024)} MB)`);
+      setError(
+        `File too large (max ${MAX_FILE_BYTES / (1024 * 1024)} MB)`
+      );
       return;
     }
+
     if (file.type && !isAllowedMime(file.type)) {
       setError('File type not allowed');
       return;
     }
+
     setUploading(true);
     setUploadProgress(5);
     setError('');
+
     try {
-      const { ciphertext, fileKeyB64, fileIvB64, size } = await encryptFile(file);
+      const {
+        ciphertext,
+        fileKeyB64,
+        fileIvB64,
+        size,
+      } = await encryptFile(file);
+
       setUploadProgress(40);
-      const blob = new Blob([ciphertext], { type: 'application/octet-stream' });
-      const up = await api.uploadAttachment(activeId, blob, 'application/octet-stream', (p) =>
-        setUploadProgress(40 + p * 0.4)
+
+      const blob = new Blob([ciphertext], {
+        type: 'application/octet-stream',
+      });
+
+      const upload = await api.uploadAttachment(
+        activeId,
+        blob,
+        'application/octet-stream',
+        (progress) => {
+          setUploadProgress(40 + progress * 0.4);
+        }
       );
-      const attachmentId = up.data?.id;
-      if (!attachmentId) throw new Error('Upload failed');
+
+      const attachmentId = upload.data?.id;
+
+      if (!attachmentId) {
+        throw new Error('Attachment upload failed');
+      }
+
       const payload = {
         type: 'attachment',
         attachmentId,
@@ -654,15 +1159,18 @@ export function ChatPage() {
         fileKeyB64,
         fileIvB64,
       };
+
       setUploadProgress(90);
+
       await sendEncryptedPayload(payload, '', {
         attachmentId,
         filename: file.name,
-        mime: file.type,
+        mime: file.type || 'application/octet-stream',
         size,
         fileKeyB64,
         fileIvB64,
       });
+
       setUploadProgress(100);
     } catch (e) {
       setError(e.message || 'Attachment failed');
@@ -673,24 +1181,41 @@ export function ChatPage() {
   };
 
   const handleDownloadAttachment = async (attachment) => {
-    const buf = await api.downloadAttachmentCiphertext(attachment.attachmentId);
-    const plain = await decryptFile(buf, attachment.fileKeyB64, attachment.fileIvB64);
-    return new Blob([plain], { type: attachment.mime || 'application/octet-stream' });
+    const ciphertext = await api.downloadAttachmentCiphertext(
+      attachment.attachmentId
+    );
+
+    const plaintext = await decryptFile(
+      ciphertext,
+      attachment.fileKeyB64,
+      attachment.fileIvB64
+    );
+
+    return new Blob([plaintext], {
+      type: attachment.mime || 'application/octet-stream',
+    });
   };
 
   const handleLogout = async () => {
     try {
       await api.logout();
     } catch {
-      /* ignore */
+      // Local logout must still complete.
     }
+
     disconnectSocket();
     clearSessionCache();
     clearSession();
+
     navigate('/auth', { replace: true });
   };
 
-  const showSidebar = !activeId;
+  /*
+   * IMPORTANT:
+   * Mobile: show the list if no conversation is selected.
+   * Desktop: AppShell must keep both panels visible at md and above.
+   */
+  const showSidebar = !activeConversation;
 
   return (
     <>
@@ -716,16 +1241,27 @@ export function ChatPage() {
               ) : (
                 <WifiOff className="h-3.5 w-3.5 text-bambi-error" />
               )}
-              <span>{connected ? 'Connected' : 'Reconnecting…'}</span>
+
+              <span>
+                {connected ? 'Connected' : 'Reconnecting…'}
+              </span>
+
               <Shield
                 className={`ml-auto h-3.5 w-3.5 ${
-                  cryptoReady ? 'text-bambi-success' : 'text-bambi-text-secondary'
+                  cryptoReady
+                    ? 'text-bambi-success'
+                    : 'text-bambi-text-secondary'
                 }`}
               />
+
               <span>{cryptoReady ? 'E2EE' : 'Keys…'}</span>
             </div>
 
-            {error && <p className="px-3 py-2 text-caption text-bambi-error">{error}</p>}
+            {error && (
+              <div className="px-3 py-2 text-caption text-bambi-error">
+                {error}
+              </div>
+            )}
 
             {loadingList ? (
               <div className="flex justify-center py-12">
@@ -734,15 +1270,35 @@ export function ChatPage() {
             ) : filtered.length === 0 ? (
               <EmptyState
                 icon={MessageSquarePlus}
-                title={searchQuery || filter !== 'all' ? 'No results' : 'No conversations'}
-                description={filter === 'unread' ? 'You have no unread chats.' : filter === 'groups' ? 'You are not in any groups yet.' : 'Find people or create a group to start messaging.'}
+                title={
+                  searchQuery || filter !== 'all'
+                    ? 'No results'
+                    : 'No conversations'
+                }
+                description={
+                  filter === 'unread'
+                    ? 'You have no unread chats.'
+                    : filter === 'groups'
+                      ? 'You are not in any groups yet.'
+                      : 'Find people or create a group to start messaging.'
+                }
                 action={
-                  !searchQuery && filter === 'all' && (
+                  !searchQuery &&
+                  filter === 'all' && (
                     <div className="flex gap-2">
-                      <Button variant="secondary" size="sm" onClick={() => setSearchOpen(true)}>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setSearchOpen(true)}
+                      >
                         Find people
                       </Button>
-                      <Button variant="primary" size="sm" onClick={() => setGroupOpen(true)}>
+
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => setGroupOpen(true)}
+                      >
                         New group
                       </Button>
                     </div>
@@ -751,12 +1307,12 @@ export function ChatPage() {
               />
             ) : (
               <div className="flex flex-col gap-0.5 px-1.5 py-1">
-                {filtered.map((conv) => (
+                {filtered.map((conversation) => (
                   <ConversationListItem
-                    key={conv.id}
-                    conversation={conv}
-                    isActive={conv.id === activeId}
-                    onClick={() => setActiveId(conv.id)}
+                    key={conversation.id}
+                    conversation={conversation}
+                    isActive={sameId(conversation.id, activeId)}
+                    onClick={() => openConversation(conversation.id)}
                   />
                 ))}
               </div>
@@ -765,56 +1321,94 @@ export function ChatPage() {
         }
       >
         {activeConversation ? (
-          <>
+          <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <ConversationHeader
               conversation={{
                 ...activeConversation,
-                subtitle: typingLabel ? `${typingLabel} is typing…` : undefined,
+                subtitle: typingLabel
+                  ? `${typingLabel} is typing…`
+                  : undefined,
               }}
-              onBack={() => setActiveId(null)}
-              onOpenInfo={isGroup ? () => setGroupInfoOpen(true) : () => setContactOpen(true)}
+              onBack={goBackToChats}
+              onOpenInfo={
+                isGroup
+                  ? () => setGroupInfoOpen(true)
+                  : () => setContactOpen(true)
+              }
               onSearch={() => setChatSearchOpen(true)}
               onAudioCall={() => startCallWithActive('audio')}
               onVideoCall={() => startCallWithActive('video')}
               callsDisabled={Boolean(callsDisabledReason)}
               callsDisabledReason={callsDisabledReason}
             />
+
             {chatSearchOpen && (
-              <div className="flex items-center gap-2 border-b border-bambi-border bg-bambi-surface px-3 py-2 md:px-5">
+              <div className="flex shrink-0 items-center gap-2 border-b border-bambi-border bg-bambi-surface px-3 py-2 md:px-5">
                 <Search className="h-4 w-4 shrink-0 text-bambi-text-secondary" />
+
                 <input
                   autoFocus
                   type="search"
                   value={chatSearch}
-                  onChange={(e) => setChatSearch(e.target.value)}
+                  onChange={(event) => setChatSearch(event.target.value)}
                   placeholder="Search in this chat"
                   aria-label="Search in this chat"
                   className="min-w-0 flex-1 bg-transparent text-sm text-bambi-text placeholder:text-bambi-text-secondary focus:outline-none"
                 />
-                {trimmedSearch && <span className="shrink-0 text-xs text-bambi-text-secondary">{visibleMessages.length} found</span>}
-                <button type="button" onClick={() => { setChatSearchOpen(false); setChatSearch(''); }} aria-label="Close search" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-bambi-text-secondary hover:bg-bambi-background">
+
+                {trimmedSearch && (
+                  <span className="shrink-0 text-xs text-bambi-text-secondary">
+                    {visibleMessages.length} found
+                  </span>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setChatSearchOpen(false);
+                    setChatSearch('');
+                  }}
+                  aria-label="Close search"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-bambi-text-secondary hover:bg-bambi-background"
+                >
                   <X className="h-4 w-4" />
                 </button>
               </div>
             )}
-            <MessageTimeline
-              messages={visibleMessages}
-              currentUserId={userId}
-              isLoading={loadingMessages}
-              highlight={trimmedSearch ? chatSearch.trim() : ''}
-              emptyLabel={trimmedSearch ? 'No matching messages' : undefined}
-              onDownloadAttachment={handleDownloadAttachment}
-            />
-            <MessageComposer
-              onSend={handleSend}
-              onAttach={handleAttach}
-              uploading={uploading}
-              uploadProgress={uploadProgress}
-              disabled={!cryptoReady}
-              placeholder={cryptoReady ? 'Type a message' : 'Encryption not ready…'}
-              onTypingChange={(typing) => emitTyping(activeId, typing)}
-            />
-          </>
+
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <MessageTimeline
+                messages={visibleMessages}
+                currentUserId={userId}
+                isLoading={loadingMessages}
+                highlight={trimmedSearch ? chatSearch.trim() : ''}
+                emptyLabel={
+                  trimmedSearch ? 'No matching messages' : undefined
+                }
+                onDownloadAttachment={handleDownloadAttachment}
+              />
+            </div>
+
+            <div className="shrink-0">
+              <MessageComposer
+                onSend={handleSend}
+                onAttach={handleAttach}
+                uploading={uploading}
+                uploadProgress={uploadProgress}
+                disabled={!cryptoReady}
+                placeholder={
+                  cryptoReady
+                    ? 'Type a message'
+                    : 'Encryption not ready…'
+                }
+                onTypingChange={(typing) => {
+                  if (activeIdRef.current) {
+                    emitTyping(activeIdRef.current, typing);
+                  }
+                }}
+              />
+            </div>
+          </div>
         ) : (
           <NoConversationSelected />
         )}
@@ -825,10 +1419,11 @@ export function ChatPage() {
         onClose={() => setSearchOpen(false)}
         friends={friends}
         onStartChat={(id) => {
-          setActiveId(id);
+          openConversation(id);
           loadList();
         }}
       />
+
       <FriendsPanel
         open={friendsOpen}
         initialTab={friendRequests.length ? 'requests' : 'friends'}
@@ -839,22 +1434,27 @@ export function ChatPage() {
           setSearchOpen(true);
         }}
         onStartChat={(id) => {
-          setActiveId(id);
+          openConversation(id);
           loadList();
         }}
       />
+
       <SettingsPanel
         open={settingsOpen}
         currentUser={me}
         onClose={() => setSettingsOpen(false)}
         onLogout={handleLogout}
-        onProfileUpdated={(profile) => setMe((current) => ({ ...current, ...profile }))}
+        onProfileUpdated={(profile) => {
+          setMe((current) => ({ ...current, ...profile }));
+        }}
       />
+
       <CreateGroupDialog
         open={groupOpen}
         onClose={() => setGroupOpen(false)}
         onCreated={handleGroupCreated}
       />
+
       <ContactInfoPanel
         open={contactOpen && !isGroup}
         conversation={activeConversation}
@@ -864,10 +1464,14 @@ export function ChatPage() {
         onVideoCall={() => startCallWithActive('video')}
         onSearch={() => setChatSearchOpen(true)}
         onDownloadAttachment={handleDownloadAttachment}
-        onBlocked={() => { setActiveId(null); loadList(); }}
+        onBlocked={() => {
+          goBackToChats();
+          loadList();
+        }}
         callsDisabled={Boolean(callsDisabledReason)}
         callsDisabledReason={callsDisabledReason}
       />
+
       <CallOverlay
         call={calls.call}
         notice={calls.notice}
@@ -878,12 +1482,16 @@ export function ChatPage() {
         onToggleMute={calls.toggleMute}
         onToggleCamera={calls.toggleCamera}
       />
+
       <GroupInfoPanel
         open={groupInfoOpen}
         conversationId={activeId}
         onClose={() => setGroupInfoOpen(false)}
         onChanged={(info) => {
-          if (info?.left) setActiveId(null);
+          if (info?.left) {
+            goBackToChats();
+          }
+
           loadList();
         }}
       />

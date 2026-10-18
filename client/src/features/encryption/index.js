@@ -8,4 +8,5 @@ export {
   decryptIncoming,
   getSessionKey,
   clearSessionCache,
+  invalidateSessionKey,
 } from './sessionManager.js';

@@ -4,6 +4,29 @@ import { store } from '../store/index.js';
 
 const router = Router();
 
+function broadcastMessage(req, conversationId, msg, senderId) {
+  const io = req.app.get('io');
+  if (!io || !msg) return;
+  try {
+    io.to(`conv:${conversationId}`).emit('message:new', { message: msg });
+    // Also notify each member directly (covers users not currently in the room)
+    Promise.resolve(store.getMemberIds(conversationId)).then((members) => {
+      for (const mid of members || []) {
+        if (mid === senderId) continue;
+        io.to(`user:${mid}`).emit('message:new', { message: msg });
+        io.to(`user:${mid}`).emit('message:notify', {
+          conversationId,
+          messageId: msg.id,
+          senderId,
+          createdAt: msg.createdAt,
+        });
+      }
+    }).catch(() => {});
+  } catch {
+    /* non-fatal */
+  }
+}
+
 router.get('/', requireAuth, async (req, res, next) => {
   try {
     res.json({ data: await store.listConversations(req.user.id) });
@@ -48,6 +71,7 @@ router.post('/:id/messages', requireAuth, async (req, res, next) => {
       const status = result.error.code === 'FORBIDDEN' ? 403 : 400;
       return res.status(status).json({ error: result.error });
     }
+    broadcastMessage(req, req.params.id, result.data, req.user.id);
     res.status(201).json(result);
   } catch (err) {
     next(err);

@@ -50,7 +50,21 @@ export function ConversationHeader({
   }, [menuOpen]);
 
   if (!conversation) return null;
-  const { name, avatarUrl, isOnline, isGroup, memberCount, subtitle } = conversation;
+  const { name, avatarUrl, isOnline, isGroup, memberCount, subtitle, lastSeen } = conversation;
+
+  const formatLastSeen = (iso) => {
+    if (!iso) return 'Offline';
+    try {
+      const d = new Date(iso);
+      const diff = Date.now() - d.getTime();
+      if (diff < 60_000) return 'Last seen just now';
+      if (diff < 3_600_000) return `Last seen ${Math.floor(diff / 60_000)}m ago`;
+      if (diff < 86_400_000) return `Last seen ${Math.floor(diff / 3_600_000)}h ago`;
+      return `Last seen ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+    } catch {
+      return 'Offline';
+    }
+  };
 
   const typing = Boolean(subtitle && subtitle.endsWith('is typing…'));
   const statusText = typing
@@ -59,7 +73,7 @@ export function ConversationHeader({
       ? `${memberCount || 0} members`
       : isOnline
         ? 'Online'
-        : 'Offline';
+        : formatLastSeen(lastSeen);
 
   const disabledTitle = callsDisabledReason || 'Unavailable';
 

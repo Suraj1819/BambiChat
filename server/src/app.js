@@ -14,8 +14,15 @@ import keysRouter from './routes/keys.js';
 import attachmentsRouter from './routes/attachments.js';
 import groupsRouter from './routes/groups.js';
 import reactionsRouter from './routes/reactions.js';
+import { existsSync } from 'fs';
+import { join, resolve } from 'path';
 
 const app = express();
+
+// Production: serve Vite build from ../dist (monorepo root)
+const DIST = resolve(process.cwd(), '../dist');
+const DIST_ALT = resolve(process.cwd(), 'dist');
+const staticRoot = existsSync(DIST) ? DIST : existsSync(DIST_ALT) ? DIST_ALT : null;
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(
@@ -73,6 +80,34 @@ app.use('/api/v1/keys', keysRouter);
 app.use('/api/v1/attachments', attachmentsRouter);
 app.use('/api/v1/groups', groupsRouter);
 app.use('/api/v1/conversations', reactionsRouter);
+
+// Static frontend (Vite dist) — must be after API routes
+if (staticRoot) {
+  app.use(
+    express.static(staticRoot, {
+      index: false,
+      maxAge: '1y',
+      setHeaders(res, filePath) {
+        // HTML must never be cached long — it points at hashed asset names
+        if (filePath.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-cache');
+        }
+      },
+    })
+  );
+  // SPA fallback: any non-API GET returns index.html
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io') || req.path.startsWith('/health')) {
+      return next();
+    }
+    const index = join(staticRoot, 'index.html');
+    if (existsSync(index)) {
+      res.setHeader('Cache-Control', 'no-cache');
+      return res.sendFile(index);
+    }
+    next();
+  });
+}
 
 app.use(notFoundHandler);
 app.use(errorHandler);

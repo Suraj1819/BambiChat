@@ -68,6 +68,7 @@ export function setupSockets(io) {
     (async () => {
       try {
         const friends = await store.listFriends(userId);
+        // Tell friends that I am online
         for (const f of friends) {
           const presence = store.getPresenceForViewer
             ? await store.getPresenceForViewer(userId, f.id)
@@ -78,6 +79,16 @@ export function setupSockets(io) {
             lastSeen: presence.lastSeen || null,
           });
         }
+        // Tell ME the current online/offline state of each friend
+        const snapshot = {};
+        for (const f of friends) {
+          if (store.getPresenceForViewer) {
+            snapshot[f.id] = await store.getPresenceForViewer(f.id, userId);
+          } else {
+            snapshot[f.id] = store.getPresence(f.id);
+          }
+        }
+        socket.emit('presence:snapshot', { presence: snapshot });
       } catch {
         /* ignore */
       }
@@ -139,10 +150,14 @@ export function setupSockets(io) {
           return;
         }
         const msg = result.data;
+        // Ensure conversationId is always present for AAD / decrypt on the client
+        if (!msg.conversationId) msg.conversationId = conversationId;
         io.to(`conv:${conversationId}`).emit('message:new', { message: msg });
         const members = await store.getMemberIds(conversationId);
         for (const mid of members) {
           if (mid === userId) continue;
+          // Deliver full message even if they have not joined the room yet
+          emitToUser(io, mid, 'message:new', { message: msg });
           emitToUser(io, mid, 'message:notify', {
             conversationId,
             messageId: msg.id,

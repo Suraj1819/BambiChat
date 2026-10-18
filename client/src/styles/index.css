@@ -229,3 +229,47 @@ button { touch-action: manipulation; }
 /* Calls and chat search */
 .composer-textarea { background: rgb(var(--bambi-background)); }
 .sidebar-search::-webkit-search-cancel-button { cursor: pointer; }
+
+
+/* CHAT_THEME_FIX — force readable text in light and dark */
+.conversation-header,
+.conversation-header .text-bambi-text,
+.message-composer,
+.sidebar,
+[data-app-shell] {
+  color: rgb(var(--bambi-text));
+}
+.conversation-row .text-bambi-text,
+.message-bubble-peer,
+.message-bubble-peer .text-bambi-text {
+  color: rgb(var(--bambi-text)) !important;
+}
+.message-bubble-own,
+.message-bubble-own .text-white {
+  color: #fff !important;
+}
+.text-bambi-text-secondary {
+  color: rgb(var(--bambi-text-secondary)) !important;
+}
+.text-bambi-text {
+  color: rgb(var(--bambi-text)) !important;
+}
+.text-bambi-primary {
+  color: rgb(var(--bambi-primary)) !important;
+}
+.dark .conversation-header span,
+.dark .conversation-row span,
+.dark .conversation-row p,
+.dark .message-composer,
+.dark .message-composer textarea,
+.dark .sidebar {
+  color: inherit;
+}
+.dark .message-composer textarea,
+.dark .bambi-input {
+  color: rgb(var(--bambi-text)) !important;
+  background: rgb(var(--bambi-background)) !important;
+}
+.dark .message-composer textarea::placeholder {
+  color: rgb(var(--bambi-text-secondary)) !important;
+}

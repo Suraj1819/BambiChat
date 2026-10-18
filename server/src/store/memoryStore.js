@@ -405,7 +405,8 @@ export const store = {
           : 'Message'
         : null;
 
-      const online = peerUserId ? presence.get(peerUserId)?.status === 'online' : false;
+      const pres = peerUserId ? presence.get(peerUserId) : null;
+      const online = pres?.status === 'online';
 
       result.push({
         id: convId,
@@ -417,6 +418,7 @@ export const store = {
         lastMessageAt: last?.createdAt || conv.updatedAt,
         unreadCount: 0,
         isOnline: online,
+        lastSeen: online ? null : (pres?.lastSeen || pres?.at || null),
         isGroup: conv.type === 'group',
         memberCount: members.filter((m) => !m.leftAt).length,
       });
