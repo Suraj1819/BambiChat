@@ -82,6 +82,90 @@ function sameId(a, b) {
   return a != null && b != null && String(a) === String(b);
 }
 
+/*
+ * Read avatar URLs from common profile and API response field names.
+ */
+function getAvatarUrl(user) {
+  if (!user || typeof user !== 'object') return null;
+
+  const directUrl =
+    user.avatarUrl ??
+    user.avatar_url ??
+    user.photoURL ??
+    user.photoUrl ??
+    user.photo_url ??
+    user.imageUrl ??
+    user.image_url ??
+    user.avatar ??
+    user.photo ??
+    user.profilePicture ??
+    user.profile_picture ??
+    null;
+
+  if (typeof directUrl === 'string' && directUrl.trim()) {
+    return directUrl.trim();
+  }
+
+  const nestedProfile =
+    user.profile ??
+    user.user ??
+    user.peer ??
+    user.otherUser ??
+    user.contact ??
+    null;
+
+  if (nestedProfile && nestedProfile !== user) {
+    return getAvatarUrl(nestedProfile);
+  }
+
+  return null;
+}
+
+function getPeerId(conversation) {
+  return (
+    conversation?.peerUserId ??
+    conversation?.peer_user_id ??
+    conversation?.otherUserId ??
+    conversation?.other_user_id ??
+    conversation?.recipientId ??
+    conversation?.recipient_id ??
+    null
+  );
+}
+
+function mergeConversationProfiles(conversationList, friendList) {
+  const friendsById = new Map();
+
+  for (const friend of friendList) {
+    const id = friend?.id ?? friend?.userId ?? friend?.user_id;
+
+    if (id != null) {
+      friendsById.set(String(id), friend);
+    }
+  }
+
+  return conversationList.map((conversation) => {
+    const peerId = getPeerId(conversation);
+    const friend =
+      peerId != null ? friendsById.get(String(peerId)) : null;
+
+    const conversationAvatar = getAvatarUrl(conversation);
+    const friendAvatar = getAvatarUrl(friend);
+
+    return {
+      ...conversation,
+      peerUserId: peerId ?? conversation.peerUserId,
+      name:
+        conversation.name ||
+        friend?.displayName ||
+        friend?.display_name ||
+        friend?.username ||
+        'Unknown',
+      avatarUrl: conversationAvatar || friendAvatar || null,
+    };
+  });
+}
+
 export function ChatPage() {
   const navigate = useNavigate();
   const sessionUser = getSessionUser();
@@ -120,10 +204,6 @@ export function ChatPage() {
   activeIdRef.current = activeId;
   conversationsRef.current = conversations;
 
-  /*
-   * Always resolve the selected conversation from the current list.
-   * String-safe matching prevents ID type mismatches.
-   */
   const activeConversation = conversations.find((conversation) =>
     sameId(conversation.id, activeId)
   );
@@ -134,23 +214,20 @@ export function ChatPage() {
 
   const resolveCallPeer = useCallback((peerId) => {
     const conversation = conversationsRef.current.find((item) =>
-      sameId(item.peerUserId, peerId)
+      sameId(getPeerId(item), peerId)
     );
 
-    return conversation
-      ? {
-          name: conversation.name,
-          avatarUrl: conversation.avatarUrl,
-        }
-      : null;
+    if (!conversation) return null;
+
+    return {
+      name: conversation.name,
+      avatarUrl: getAvatarUrl(conversation),
+    };
   }, []);
 
   const calls = useCall({ resolvePeer: resolveCallPeer });
   const attachCalls = calls.attach;
 
-  /*
-   * Open a conversation and clear the previous conversation's UI state.
-   */
   const openConversation = useCallback((conversationId) => {
     if (conversationId == null) return;
 
@@ -194,6 +271,10 @@ export function ChatPage() {
     }
   }, []);
 
+  /*
+   * Load conversations, friends and profiles together so that each
+   * direct conversation can use the friend's saved avatar URL.
+   */
   const loadList = useCallback(async () => {
     setLoadingList(true);
 
@@ -218,22 +299,27 @@ export function ChatPage() {
         localProfile = {};
       }
 
-      const nextConversations = convRes.data || [];
+      const nextFriends = Array.isArray(friendsRes.data)
+        ? friendsRes.data
+        : [];
+
+      const rawConversations = Array.isArray(convRes.data)
+        ? convRes.data
+        : [];
+
+      const nextConversations = mergeConversationProfiles(
+        rawConversations,
+        nextFriends
+      );
 
       setMe({
         ...meRes.data,
         ...localProfile,
       });
 
+      setFriends(nextFriends);
       setConversations(nextConversations);
-      setFriends(friendsRes.data || []);
       setFriendRequests(requestsRes.data?.incoming || []);
-
-      /*
-       * Do not reset activeId during refresh.
-       * If the selected conversation is temporarily absent from the list,
-       * the UI safely falls back to the conversation list on mobile.
-       */
     } catch (e) {
       if (e.status === 401) {
         clearSession();
@@ -260,7 +346,7 @@ export function ChatPage() {
           setFriendRequests(result.data?.incoming || []);
         }
       } catch {
-        // Preserve the last known requests if a refresh fails.
+        // Keep the last successfully loaded requests.
       }
     };
 
@@ -310,7 +396,6 @@ export function ChatPage() {
 
     if (groupMessage) {
       let plaintext;
-
       const groupKey = await loadGroupKey(conversationId);
 
       if (groupKey?.key) {
@@ -323,8 +408,9 @@ export function ChatPage() {
         );
       } else {
         try {
-          const senderId =
-            sameId(message.senderId, userId) ? null : message.senderId;
+          const senderId = sameId(message.senderId, userId)
+            ? null
+            : message.senderId;
 
           if (senderId) {
             const senderPublicKey = await resolvePeerPub(senderId);
@@ -370,7 +456,7 @@ export function ChatPage() {
               parsed.keyDist.epoch || 1
             );
           } catch {
-            // Keep the message stream working if key bootstrap fails.
+            // Keep rendering messages if key bootstrap fails.
           }
         }
 
@@ -399,7 +485,7 @@ export function ChatPage() {
     }
 
     const peerForKey = sameId(message.senderId, userId)
-      ? conversation?.peerUserId
+      ? getPeerId(conversation)
       : message.senderId;
 
     if (!peerForKey) {
@@ -458,9 +544,6 @@ export function ChatPage() {
     };
   }
 
-  /*
-   * Initialise encryption and socket listeners.
-   */
   useEffect(() => {
     if (!userId) {
       navigate('/auth', { replace: true });
@@ -565,7 +648,7 @@ export function ChatPage() {
     const applyPresence = (peerId, status, lastSeen) => {
       setConversations((previous) =>
         previous.map((conversation) =>
-          sameId(conversation.peerUserId, peerId)
+          sameId(getPeerId(conversation), peerId)
             ? {
                 ...conversation,
                 isOnline: status === 'online',
@@ -588,7 +671,7 @@ export function ChatPage() {
 
       setConversations((previous) =>
         previous.map((conversation) => {
-          const peerId = conversation.peerUserId;
+          const peerId = getPeerId(conversation);
           if (!peerId || !presence[peerId]) return conversation;
 
           const currentPresence = presence[peerId];
@@ -607,7 +690,7 @@ export function ChatPage() {
 
     const requestPresence = () => {
       const ids = conversationsRef.current
-        .map((conversation) => conversation.peerUserId)
+        .map(getPeerId)
         .filter(Boolean);
 
       if (!ids.length || !socket?.connected) return;
@@ -618,7 +701,7 @@ export function ChatPage() {
 
         setConversations((previous) =>
           previous.map((conversation) => {
-            const peerId = conversation.peerUserId;
+            const peerId = getPeerId(conversation);
             if (!peerId || !data[peerId]) return conversation;
 
             const presence = data[peerId];
@@ -688,9 +771,6 @@ export function ChatPage() {
     };
   }, [userId, initCrypto, loadList, navigate, attachCalls]);
 
-  /*
-   * Load messages whenever the selected conversation changes.
-   */
   useEffect(() => {
     if (!activeId || !userId) {
       setMessages([]);
@@ -746,10 +826,6 @@ export function ChatPage() {
         }
 
         if (cancelled) return;
-
-        /*
-         * Prevent stale requests from replacing the messages of a newer chat.
-         */
         if (!sameId(activeIdRef.current, conversationId)) return;
 
         setMessages(decryptedMessages);
@@ -824,18 +900,18 @@ export function ChatPage() {
       ? 'You are already on a call'
       : !connected
         ? 'You are offline'
-        : !activeConversation?.peerUserId
+        : !getPeerId(activeConversation)
           ? 'Calls are not available for this chat'
           : '';
 
   const startCallWithActive = (kind) => {
-    if (!activeConversation?.peerUserId || callsDisabledReason) return;
+    if (!getPeerId(activeConversation) || callsDisabledReason) return;
 
     calls.startCall({
       peer: {
-        id: activeConversation.peerUserId,
+        id: getPeerId(activeConversation),
         name: activeConversation.name,
-        avatarUrl: activeConversation.avatarUrl,
+        avatarUrl: getAvatarUrl(activeConversation),
       },
       conversationId: activeConversation.id,
       kind,
@@ -866,7 +942,7 @@ export function ChatPage() {
 
         wrapped.push(wrappedKey);
       } catch {
-        // Continue distributing to other members.
+        // Continue with remaining members.
       }
     }
 
@@ -884,7 +960,6 @@ export function ChatPage() {
         if (!publicKey) continue;
 
         const messageClientId = clientMsgId();
-        const plaintext = JSON.stringify(payload);
 
         const encrypted = await encryptOutgoing({
           localUserId: userId,
@@ -892,7 +967,7 @@ export function ChatPage() {
           peerPublicKeyB64: publicKey,
           conversationId,
           clientMessageId: messageClientId,
-          plaintext,
+          plaintext: JSON.stringify(payload),
         });
 
         const body = {
@@ -910,7 +985,7 @@ export function ChatPage() {
           await api.sendEncryptedMessage(conversationId, body);
         }
       } catch {
-        // Continue with other group members.
+        // Continue with other members.
       }
     }
   }
@@ -927,11 +1002,9 @@ export function ChatPage() {
 
       await distributeGroupKey(group.id, memberIds, keyB64, 1);
       await loadList();
-
       openConversation(group.id);
     } catch (e) {
       setError(e.message || 'Failed to initialise group encryption');
-
       await loadList();
       openConversation(group.id);
     }
@@ -983,12 +1056,7 @@ export function ChatPage() {
       if (!groupKey) {
         const generated = await generateGroupKey();
 
-        await saveGroupKey(
-          conversationId,
-          generated.keyB64,
-          1
-        );
-
+        await saveGroupKey(conversationId, generated.keyB64, 1);
         groupKey = await loadGroupKey(conversationId);
       }
 
@@ -1013,7 +1081,7 @@ export function ChatPage() {
         messageType: optimisticAttachment ? 'attachment' : 'text',
       };
     } else {
-      const peerId = conversation?.peerUserId;
+      const peerId = getPeerId(conversation);
 
       if (!peerId) {
         throw new Error('Cannot determine peer for encryption');
@@ -1122,12 +1190,8 @@ export function ChatPage() {
     setError('');
 
     try {
-      const {
-        ciphertext,
-        fileKeyB64,
-        fileIvB64,
-        size,
-      } = await encryptFile(file);
+      const { ciphertext, fileKeyB64, fileIvB64, size } =
+        await encryptFile(file);
 
       setUploadProgress(40);
 
@@ -1139,9 +1203,7 @@ export function ChatPage() {
         activeId,
         blob,
         'application/octet-stream',
-        (progress) => {
-          setUploadProgress(40 + progress * 0.4);
-        }
+        (progress) => setUploadProgress(40 + progress * 0.4)
       );
 
       const attachmentId = upload.data?.id;
@@ -1206,15 +1268,9 @@ export function ChatPage() {
     disconnectSocket();
     clearSessionCache();
     clearSession();
-
     navigate('/auth', { replace: true });
   };
 
-  /*
-   * IMPORTANT:
-   * Mobile: show the list if no conversation is selected.
-   * Desktop: AppShell must keep both panels visible at md and above.
-   */
   const showSidebar = !activeConversation;
 
   return (
@@ -1242,9 +1298,7 @@ export function ChatPage() {
                 <WifiOff className="h-3.5 w-3.5 text-bambi-error" />
               )}
 
-              <span>
-                {connected ? 'Connected' : 'Reconnecting…'}
-              </span>
+              <span>{connected ? 'Connected' : 'Reconnecting…'}</span>
 
               <Shield
                 className={`ml-auto h-3.5 w-3.5 ${
@@ -1325,6 +1379,7 @@ export function ChatPage() {
             <ConversationHeader
               conversation={{
                 ...activeConversation,
+                avatarUrl: getAvatarUrl(activeConversation),
                 subtitle: typingLabel
                   ? `${typingLabel} is typing…`
                   : undefined,
