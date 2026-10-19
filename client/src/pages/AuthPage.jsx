@@ -16,10 +16,16 @@ import { api } from '@/lib/api';
 import { setSession } from '@/lib/session';
 import { getThemePreference, resolveTheme, setThemePreference } from '@/lib/theme';
 
+/**
+ * Auth (no OTP required for phone/username):
+ *  Register: phone + username + display name
+ *  Login: username OR phone
+ * Email OTP remains available later; phone is primary for now.
+ */
 export function AuthPage() {
   const navigate = useNavigate();
   const [mode, setMode] = useState('login'); // login | register
-  const [method, setMethod] = useState('username'); // username | phone
+  const [loginMethod, setLoginMethod] = useState('username'); // username | phone
   const [username, setUsername] = useState('');
   const [phone, setPhone] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -33,248 +39,272 @@ export function AuthPage() {
     setThemePreference(next);
   };
 
+  const switchMode = (next) => {
+    setMode(next);
+    setError('');
+  };
+
+  const digits = phone.replace(/\D/g, '');
+
   const submit = async (event) => {
     event.preventDefault();
     setError('');
 
     const cleanUsername = username.trim().toLowerCase();
-    const digits = phone.replace(/\D/g, '');
 
-    if (method === 'username') {
-      if (!/^[a-z][a-z0-9_]{2,29}$/.test(cleanUsername)) {
-        setError('Username must be 3–30 characters, start with a letter, use a–z, 0–9 or _.');
-        return;
-      }
-    } else {
+    if (mode === 'register') {
       if (digits.length < 8 || digits.length > 15) {
         setError('Enter a valid phone number (8–15 digits).');
         return;
       }
+      if (!/^[a-z][a-z0-9_]{2,29}$/.test(cleanUsername)) {
+        setError('Username must be 3–30 characters, start with a letter, use a–z, 0–9 or _.');
+        return;
+      }
+      if (displayName.trim().length > 60) {
+        setError('Display name must be 60 characters or fewer.');
+        return;
+      }
+      setLoading(true);
+      try {
+        const response = await api.register(
+          cleanUsername,
+          displayName.trim() || cleanUsername,
+          digits
+        );
+        setSession({ token: response.data.token, user: response.data.user });
+        navigate('/', { replace: true });
+      } catch (err) {
+        setError(err.message || 'Could not create account.');
+      } finally {
+        setLoading(false);
+      }
+      return;
     }
 
-    if (mode === 'register' && displayName.trim().length > 60) {
-      setError('Display name must be 60 characters or fewer.');
+    // Login
+    if (loginMethod === 'username') {
+      if (!/^[a-z][a-z0-9_]{2,29}$/.test(cleanUsername)) {
+        setError('Enter a valid username.');
+        return;
+      }
+    } else if (digits.length < 8 || digits.length > 15) {
+      setError('Enter a valid phone number (8–15 digits).');
       return;
     }
 
     setLoading(true);
     try {
-      const response =
-        mode === 'register'
-          ? await api.register(
-              method === 'username' ? cleanUsername : undefined,
-              displayName.trim() || undefined,
-              method === 'phone' ? digits : undefined
-            )
-          : await api.login(
-              method === 'username' ? cleanUsername : undefined,
-              method === 'phone' ? digits : undefined
-            );
+      const response = await api.login(
+        loginMethod === 'username' ? cleanUsername : undefined,
+        loginMethod === 'phone' ? digits : undefined
+      );
       setSession({ token: response.data.token, user: response.data.user });
       navigate('/', { replace: true });
     } catch (err) {
-      setError(err.message || 'Could not sign in. Please try again.');
+      setError(err.message || 'Could not sign in.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <main className="auth-page flex min-h-full w-full items-center justify-center p-4 sm:p-6">
+    <div className="auth-page relative flex min-h-[100dvh] items-center justify-center overflow-hidden p-4">
       <button
         type="button"
         onClick={toggleTheme}
-        className="auth-theme-toggle absolute right-4 top-4 z-20 inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm sm:right-6 sm:top-6"
-        aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+        className="auth-theme-toggle absolute right-4 top-4 z-20 flex h-10 w-10 items-center justify-center rounded-full border"
+        aria-label="Toggle theme"
       >
         {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-        <span className="hidden sm:inline">{theme === 'dark' ? 'Light' : 'Dark'}</span>
       </button>
 
-      <div className="auth-layout grid w-full max-w-5xl overflow-hidden rounded-3xl border lg:min-h-[560px] lg:grid-cols-2">
-        {/* Form — minimal, reference-style */}
-        <section className="auth-form-panel order-2 flex items-center justify-center p-6 sm:p-10 lg:order-1 lg:p-12">
-          <div className="w-full max-w-[360px]">
-            <div className="mb-8 flex items-center gap-3 lg:hidden">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-bambi-primary text-white">
-                <MessageCircle className="h-5 w-5" />
-              </div>
-              <div>
-                <p className="text-lg font-semibold text-bambi-text">Bambi</p>
-                <p className="text-xs text-bambi-text-secondary">Private messaging</p>
-              </div>
+      <div className="auth-layout relative z-10 grid w-full max-w-4xl overflow-hidden rounded-3xl border md:grid-cols-2">
+        <div className="auth-brand-panel relative hidden flex-col justify-between p-10 md:flex">
+          <div className="auth-orb auth-orb-one" />
+          <div className="auth-orb auth-orb-two" />
+          <div className="relative z-10">
+            <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-white/15">
+              <MessageCircle className="h-6 w-6" />
             </div>
-
-            <h1 className="auth-heading text-2xl font-semibold tracking-tight sm:text-[28px]">
-              {mode === 'login' ? 'Welcome back' : 'Create account'}
-            </h1>
-            <p className="auth-sub mt-1.5 text-sm leading-6 text-bambi-text-secondary">
-              {mode === 'login'
-                ? 'Sign in to continue your conversations.'
-                : 'Set up your Bambi profile in a few seconds.'}
+            <h1 className="text-3xl font-semibold tracking-tight">Bambi Chat</h1>
+            <p className="mt-3 max-w-xs text-sm leading-6 text-white/75">
+              Private messaging with end-to-end encryption. Sign up with your phone number.
             </p>
+          </div>
+          <ul className="relative z-10 space-y-3 text-sm text-white/80">
+            <li className="flex items-center gap-2">
+              <Phone className="h-4 w-4 shrink-0" /> One phone number = one account
+            </li>
+            <li className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 shrink-0" /> Encrypted messages &amp; calls
+            </li>
+          </ul>
+        </div>
 
-            {/* Username / Phone */}
-            <div className="auth-method-switch mt-6 mb-5 grid grid-cols-2 gap-1 rounded-xl p-1">
+        <div className="auth-form-panel flex flex-col justify-center p-6 sm:p-10">
+          <div className="mb-6 md:hidden">
+            <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-bambi-primary text-white">
+              <MessageCircle className="h-5 w-5" />
+            </div>
+            <h1 className="auth-heading text-2xl font-semibold">Bambi Chat</h1>
+          </div>
+
+          <div className="auth-method-switch mb-6 grid grid-cols-2 gap-1 rounded-xl p-1">
+            <button
+              type="button"
+              onClick={() => switchMode('login')}
+              className={
+                mode === 'login'
+                  ? 'auth-method-active rounded-lg px-3 py-2 text-sm font-medium'
+                  : 'rounded-lg px-3 py-2 text-sm text-bambi-text-secondary'
+              }
+            >
+              Log in
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode('register')}
+              className={
+                mode === 'register'
+                  ? 'auth-method-active rounded-lg px-3 py-2 text-sm font-medium'
+                  : 'rounded-lg px-3 py-2 text-sm text-bambi-text-secondary'
+              }
+            >
+              Create account
+            </button>
+          </div>
+
+          <h2 className="auth-heading text-xl font-semibold">
+            {mode === 'login' ? 'Welcome back' : 'Create your account'}
+          </h2>
+          <p className="auth-sub mt-1 text-sm text-bambi-text-secondary">
+            {mode === 'login'
+              ? 'Log in with username or phone number (no OTP).'
+              : 'Phone number, username and display name. No OTP for now.'}
+          </p>
+
+          {mode === 'login' && (
+            <div className="mt-4 grid grid-cols-2 gap-1 rounded-xl border border-bambi-border p-1">
               <button
                 type="button"
-                onClick={() => { setMethod('username'); setError(''); }}
-                className={`flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition ${
-                  method === 'username' ? 'auth-method-active' : 'text-bambi-text-secondary'
-                }`}
+                onClick={() => setLoginMethod('username')}
+                className={
+                  loginMethod === 'username'
+                    ? 'rounded-lg bg-bambi-primary px-2 py-2 text-xs font-semibold text-white'
+                    : 'rounded-lg px-2 py-2 text-xs text-bambi-text-secondary'
+                }
               >
-                <User className="h-3.5 w-3.5" />
                 Username
               </button>
               <button
                 type="button"
-                onClick={() => { setMethod('phone'); setError(''); }}
-                className={`flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition ${
-                  method === 'phone' ? 'auth-method-active' : 'text-bambi-text-secondary'
-                }`}
+                onClick={() => setLoginMethod('phone')}
+                className={
+                  loginMethod === 'phone'
+                    ? 'rounded-lg bg-bambi-primary px-2 py-2 text-xs font-semibold text-white'
+                    : 'rounded-lg px-2 py-2 text-xs text-bambi-text-secondary'
+                }
               >
-                <Phone className="h-3.5 w-3.5" />
                 Phone
               </button>
             </div>
+          )}
 
-            <form onSubmit={submit} className="space-y-4">
-              {mode === 'register' && (
-                <div>
-                  <label htmlFor="displayName" className="auth-label mb-1.5 block text-sm font-medium">
-                    Display name <span className="font-normal text-bambi-text-secondary">(optional)</span>
-                  </label>
+          <form onSubmit={submit} className="mt-5 space-y-4">
+            {mode === 'register' && (
+              <>
+                <label className="block">
+                  <span className="auth-label mb-1.5 flex items-center gap-2 text-sm font-medium">
+                    <Phone className="h-4 w-4" /> Phone number
+                  </span>
                   <Input
-                    id="displayName"
-                    value={displayName}
-                    onChange={(e) => setDisplayName(e.target.value)}
-                    placeholder="How friends see you"
-                    autoComplete="name"
-                    maxLength={60}
-                    className="auth-input h-11 rounded-xl"
-                  />
-                </div>
-              )}
-
-              {method === 'username' ? (
-                <div>
-                  <label htmlFor="username" className="auth-label mb-1.5 block text-sm font-medium">
-                    Username
-                  </label>
-                  <div className="relative">
-                    <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-bambi-text-secondary">
-                      @
-                    </span>
-                    <Input
-                      id="username"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      placeholder="your_username"
-                      autoComplete="username"
-                      autoFocus
-                      className="auth-input h-11 rounded-xl pl-8"
-                    />
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  <label htmlFor="phone" className="auth-label mb-1.5 block text-sm font-medium">
-                    Phone number
-                  </label>
-                  <Input
-                    id="phone"
                     type="tel"
-                    inputMode="tel"
+                    inputMode="numeric"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
-                    placeholder="+91 98765 43210"
-                    autoComplete="tel"
-                    autoFocus
-                    className="auth-input h-11 rounded-xl"
+                    placeholder="9876543210"
+                    className="auth-input"
+                    required
                   />
-                  <p className="mt-1.5 text-xs text-bambi-text-secondary">
-                    Include country code. 8–15 digits.
-                  </p>
-                </div>
-              )}
+                </label>
+                <label className="block">
+                  <span className="auth-label mb-1.5 flex items-center gap-2 text-sm font-medium">
+                    <User className="h-4 w-4" /> Username
+                  </span>
+                  <Input
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value.toLowerCase())}
+                    placeholder="yourname"
+                    className="auth-input"
+                    autoComplete="username"
+                    required
+                  />
+                </label>
+                <label className="block">
+                  <span className="auth-label mb-1.5 block text-sm font-medium">Display name</span>
+                  <Input
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    placeholder="How you appear in chats"
+                    className="auth-input"
+                    autoComplete="nickname"
+                  />
+                </label>
+              </>
+            )}
 
-              {error && (
-                <div role="alert" className="auth-error rounded-xl border px-3.5 py-2.5 text-sm">
-                  {error}
-                </div>
-              )}
+            {mode === 'login' && loginMethod === 'username' && (
+              <label className="block">
+                <span className="auth-label mb-1.5 flex items-center gap-2 text-sm font-medium">
+                  <User className="h-4 w-4" /> Username
+                </span>
+                <Input
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value.toLowerCase())}
+                  placeholder="yourname"
+                  className="auth-input"
+                  autoComplete="username"
+                  required
+                />
+              </label>
+            )}
 
-              <Button
-                type="submit"
-                variant="primary"
-                className="auth-submit h-11 w-full rounded-xl text-sm font-semibold"
-                disabled={loading}
-              >
-                {loading ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Please wait…
-                  </>
-                ) : (
-                  <>
-                    {mode === 'register' ? 'Create account' : 'Sign in'}
-                    <ArrowRight className="ml-auto h-4 w-4" />
-                  </>
-                )}
-              </Button>
-            </form>
+            {mode === 'login' && loginMethod === 'phone' && (
+              <label className="block">
+                <span className="auth-label mb-1.5 flex items-center gap-2 text-sm font-medium">
+                  <Phone className="h-4 w-4" /> Phone number
+                </span>
+                <Input
+                  type="tel"
+                  inputMode="numeric"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="9876543210"
+                  className="auth-input"
+                  required
+                />
+              </label>
+            )}
 
-            <p className="mt-5 text-center text-sm text-bambi-text-secondary">
-              {mode === 'login' ? "Don't have an account?" : 'Already have an account?'}{' '}
-              <button
-                type="button"
-                className="font-semibold text-bambi-primary hover:underline"
-                onClick={() => {
-                  setMode(mode === 'login' ? 'register' : 'login');
-                  setError('');
-                }}
-              >
-                {mode === 'login' ? 'Sign up' : 'Sign in'}
-              </button>
-            </p>
-
-            <div className="auth-security-note mt-8 flex gap-2.5 rounded-xl border p-3">
-              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-bambi-success" />
-              <p className="text-xs leading-5 text-bambi-text-secondary">
-                Messages are encrypted on your device before they are sent.
+            {error && (
+              <p className="auth-error rounded-xl border px-3 py-2 text-sm" role="alert">
+                {error}
               </p>
-            </div>
-          </div>
-        </section>
+            )}
 
-        {/* Brand panel — simple, not overloaded */}
-        <section className="auth-brand-panel relative order-1 hidden overflow-hidden lg:order-2 lg:flex lg:flex-col lg:justify-between lg:p-10">
-          <div className="auth-orb auth-orb-one" />
-          <div className="auth-orb auth-orb-two" />
-          <div className="relative z-10 flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/15 bg-white/10 backdrop-blur">
-              <MessageCircle className="h-5 w-5 text-white" />
-            </div>
-            <div>
-              <p className="text-lg font-bold tracking-tight text-white">Bambi</p>
-              <p className="text-[11px] uppercase tracking-wider text-white/50">Private messaging</p>
-            </div>
-          </div>
-
-          <div className="relative z-10 max-w-sm py-8">
-            <h2 className="text-3xl font-semibold leading-tight tracking-tight text-white">
-              Conversations that feel closer.
-            </h2>
-            <p className="mt-4 text-sm leading-6 text-white/60">
-              Real-time messaging with end-to-end encryption, calls, and a calm interface.
-            </p>
-          </div>
-
-          <p className="relative z-10 text-xs text-white/40">
-            © {new Date().getFullYear()} Bambi · Private by design
-          </p>
-        </section>
+            <Button type="submit" variant="primary" className="auth-submit w-full" disabled={loading}>
+              {loading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <>
+                  {mode === 'login' ? 'Log in' : 'Create account'} <ArrowRight className="h-4 w-4" />
+                </>
+              )}
+            </Button>
+          </form>
+        </div>
       </div>
-    </main>
+    </div>
   );
 }

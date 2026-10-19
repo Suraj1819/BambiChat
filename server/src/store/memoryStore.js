@@ -15,6 +15,12 @@ const profiles = new Map();
 const usernameIndex = new Map();
 /** @type {Map<string, string>} E.164-ish digits -> userId */
 const phoneIndex = new Map();
+/** @type {Map<string, string>} lowercase email -> userId */
+const emailIndex = new Map();
+/** @type {Map<string, object>} email -> { code, purpose, expiresAt, attempts } */
+const otpStore = new Map();
+/** @type {Map<string, object>} otpSessionTokenHash -> { email, purpose, expiresAt } */
+const otpSessions = new Map();
 /** @type {Map<string, object>} token -> { userId, expiresAt } */
 const sessions = new Map();
 /** @type {Map<string, object>} */
@@ -64,9 +70,24 @@ function publicProfile(p) {
     displayName: p.displayName,
     avatarUrl: p.avatarUrl,
     about: p.about,
+    email: p.email || null,
+    phone: p.phone || null,
     hasIdentityKey: identityKeys.has(p.userId),
   };
 }
+
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email));
+}
+
+function generateOtpCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
 
 function normalizeUsername(u) {
   return String(u || '').trim().toLowerCase();
@@ -142,6 +163,186 @@ export const store = {
     return { data: publicProfile(profiles.get(userId)) };
   },
 
+
+  // --- Email OTP ---
+  requestOtp({ email, purpose = 'login' }) {
+    const em = normalizeEmail(email);
+    if (!isValidEmail(em)) {
+      return { error: { code: 'INVALID_EMAIL', message: 'Enter a valid email address' } };
+    }
+    if (!['login', 'register'].includes(purpose)) {
+      return { error: { code: 'VALIDATION', message: 'Invalid purpose' } };
+    }
+    const exists = emailIndex.has(em);
+    if (purpose === 'login' && !exists) {
+      return { error: { code: 'USER_NOT_FOUND', message: 'No account with that email' } };
+    }
+    if (purpose === 'register' && exists) {
+      return { error: { code: 'EMAIL_TAKEN', message: 'This email is already registered. Please log in.' } };
+    }
+    const code = generateOtpCode();
+    otpStore.set(em, {
+      code,
+      purpose,
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      attempts: 0,
+    });
+    // Dev-friendly: code is returned so clients without an email provider can still test.
+    // In production, send via email and omit `devCode` from the response in the route layer.
+    return {
+      data: {
+        email: em,
+        purpose,
+        expiresInSec: 600,
+        devCode: code,
+        message: 'OTP sent to your email',
+      },
+    };
+  },
+
+  verifyOtp({ email, code, purpose = 'login' }) {
+    const em = normalizeEmail(email);
+    const entry = otpStore.get(em);
+    if (!entry || entry.purpose !== purpose) {
+      return { error: { code: 'OTP_INVALID', message: 'Invalid or expired code' } };
+    }
+    if (entry.expiresAt < Date.now()) {
+      otpStore.delete(em);
+      return { error: { code: 'OTP_EXPIRED', message: 'Code expired. Request a new one.' } };
+    }
+    entry.attempts += 1;
+    if (entry.attempts > 5) {
+      otpStore.delete(em);
+      return { error: { code: 'OTP_LOCKED', message: 'Too many attempts. Request a new code.' } };
+    }
+    if (String(code).trim() !== entry.code) {
+      return { error: { code: 'OTP_INVALID', message: 'Incorrect code' } };
+    }
+    otpStore.delete(em);
+
+    // Login: issue session immediately
+    if (purpose === 'login') {
+      const userId = emailIndex.get(em);
+      if (!userId) {
+        return { error: { code: 'USER_NOT_FOUND', message: 'No account with that email' } };
+      }
+      const token = this.createSession(userId);
+      return {
+        data: {
+          token,
+          user: publicProfile(profiles.get(userId)),
+          verified: true,
+        },
+      };
+    }
+
+    // Register: issue short-lived otp session token to complete profile
+    const sessionToken = randomBytes(24).toString('hex');
+    otpSessions.set(hashToken(sessionToken), {
+      email: em,
+      purpose: 'register',
+      expiresAt: Date.now() + 15 * 60 * 1000,
+    });
+    return {
+      data: {
+        otpToken: sessionToken,
+        email: em,
+        verified: true,
+      },
+    };
+  },
+
+  completeRegistration({ otpToken, username, displayName, email, _forceEmail }) {
+    let em = _forceEmail || email || null;
+    if (!em) {
+      const rec = otpSessions.get(hashToken(otpToken || ''));
+      if (!rec || rec.purpose !== 'register' || rec.expiresAt < Date.now()) {
+        return { error: { code: 'OTP_SESSION_EXPIRED', message: 'Verification expired. Start again.' } };
+      }
+      em = rec.email;
+    }
+    em = normalizeEmail(em);
+    if (emailIndex.has(em)) {
+      return { error: { code: 'EMAIL_TAKEN', message: 'This email is already registered' } };
+    }
+    const uname = normalizeUsername(username);
+    if (!/^[a-z][a-z0-9_]{2,29}$/.test(uname)) {
+      return {
+        error: {
+          code: 'INVALID_USERNAME',
+          message: 'Username must be 3–30 chars, start with a letter, only a-z 0-9 _',
+        },
+      };
+    }
+    if (usernameIndex.has(uname)) {
+      return { error: { code: 'USERNAME_TAKEN', message: 'Username is already taken' } };
+    }
+    const userId = randomUUID();
+    const profile = {
+      id: userId,
+      userId,
+      username: uname,
+      displayName: (displayName || uname).trim().slice(0, 80),
+      avatarUrl: null,
+      about: '',
+      email: em,
+      phone: null,
+      phoneDiscoverable: false,
+      createdAt: now(),
+    };
+    profiles.set(userId, profile);
+    usernameIndex.set(uname, userId);
+    emailIndex.set(em, userId);
+    otpSessions.delete(hashToken(otpToken));
+    const token = this.createSession(userId);
+    return { data: { token, user: publicProfile(profile) } };
+  },
+
+
+  findUserIdByEmail(email) {
+    const em = normalizeEmail(email);
+    return emailIndex.get(em) || null;
+  },
+
+  registerWithEmail({ email, username, displayName }) {
+    const em = normalizeEmail(email);
+    if (!isValidEmail(em)) {
+      return { error: { code: 'INVALID_EMAIL', message: 'Enter a valid email address' } };
+    }
+    if (emailIndex.has(em)) {
+      return { error: { code: 'EMAIL_TAKEN', message: 'This email is already registered' } };
+    }
+    const uname = normalizeUsername(username);
+    if (!/^[a-z][a-z0-9_]{2,29}$/.test(uname)) {
+      return {
+        error: {
+          code: 'INVALID_USERNAME',
+          message: 'Username must be 3–30 chars, start with a letter, only a-z 0-9 _',
+        },
+      };
+    }
+    if (usernameIndex.has(uname)) {
+      return { error: { code: 'USERNAME_TAKEN', message: 'Username is already taken' } };
+    }
+    const userId = randomUUID();
+    const profile = {
+      id: userId,
+      userId,
+      username: uname,
+      displayName: (displayName || uname).trim().slice(0, 80),
+      avatarUrl: null,
+      about: '',
+      email: em,
+      phone: null,
+      phoneDiscoverable: false,
+      createdAt: now(),
+    };
+    profiles.set(userId, profile);
+    usernameIndex.set(uname, userId);
+    emailIndex.set(em, userId);
+    return { data: publicProfile(profile) };
+  },
+
   createSession(userId) {
     const token = randomBytes(32).toString('hex');
     const tokenHash = hashToken(token);
@@ -184,18 +385,19 @@ export const store = {
   },
 
   searchByUsername(query, currentUserId, limit = 20) {
-    const q = normalizeUsername(query);
+    const raw = String(query || '').trim().replace(/^@+/, '');
+    const q = normalizeUsername(raw);
     if (!q) return [];
     const results = [];
-    for (const p of profiles.values()) {
-      if (p.userId === currentUserId) continue;
-      if (isBlocked(p.userId, currentUserId) || isBlocked(currentUserId, p.userId)) continue;
-      if (p.username.includes(q) || (p.displayName || '').toLowerCase().includes(q)) {
-        results.push(publicProfile(p));
+    // Exact username match only (@handle)
+    if (usernameIndex.has(q)) {
+      const uid = usernameIndex.get(q);
+      if (uid && uid !== currentUserId && !isBlocked(uid, currentUserId) && !isBlocked(currentUserId, uid)) {
+        const prof = profiles.get(uid);
+        if (prof) results.push({ ...publicProfile(prof), matchedBy: 'username' });
       }
-      if (results.length >= limit) break;
     }
-    return results;
+    return results.slice(0, limit);
   },
 
   // --- Identity keys ---
@@ -390,11 +592,17 @@ export const store = {
       let name = conv.title;
       let avatarUrl = conv.avatarUrl;
       let peerUserId = null;
+      let username = null;
+      let phone = null;
+      let about = null;
       if (conv.type === 'direct' && otherMembers[0]) {
         const other = profiles.get(otherMembers[0].userId);
         peerUserId = otherMembers[0].userId;
         name = other?.displayName || other?.username || 'Unknown';
         avatarUrl = other?.avatarUrl ?? null;
+        username = other?.username || null;
+        phone = other?.phone || null;
+        about = other?.about || null;
       }
 
       const msgs = messages.get(convId) || [];
@@ -414,6 +622,9 @@ export const store = {
         name,
         avatarUrl,
         peerUserId,
+        username,
+        phone,
+        about,
         lastMessage: lastPreview,
         lastMessageAt: last?.createdAt || conv.updatedAt,
         unreadCount: 0,
@@ -478,13 +689,19 @@ export const store = {
     return { data: { id, existing: false, peerUserId: otherUserId } };
   },
 
-  getMessages(conversationId, userId, limit = 50) {
+  getMessages(conversationId, userId, limit = 50, before = null) {
     const members = conversationMembers.get(conversationId);
     if (!members?.some((m) => m.userId === userId && !m.leftAt)) {
       return { error: { code: 'FORBIDDEN', message: 'Not a member of this conversation' } };
     }
     const msgs = messages.get(conversationId) || [];
-    const data = msgs.slice(-limit).map((m) => ({
+    let slice = msgs;
+    if (before) {
+      const idx = msgs.findIndex((m) => m.id === before);
+      if (idx > 0) slice = msgs.slice(0, idx);
+      else if (idx === 0) slice = [];
+    }
+    const data = slice.slice(-limit).map((m) => ({
       id: m.id,
       conversationId: m.conversationId,
       senderId: m.senderId,
@@ -497,8 +714,11 @@ export const store = {
       status: m.status,
       deliveredTo: m.deliveredTo || [],
       readBy: m.readBy || [],
+      call: m.call || null,
+      system: m.system || null,
     }));
-    return { data };
+    const hasMore = slice.length > limit;
+    return { data, hasMore };
   },
 
   sendMessage(conversationId, userId, payload) {
@@ -678,6 +898,24 @@ export const store = {
     ];
     conversationMembers.set(id, members);
     messages.set(id, []);
+
+    const creator = profiles.get(creatorId);
+    const creatorName = creator?.displayName || creator?.username || 'Someone';
+    this.insertSystemMessage(id, {
+      text: `${creatorName} created this group`,
+      actorId: creatorId,
+      meta: { kind: 'group_created' },
+    });
+    for (const uid of unique) {
+      const p = profiles.get(uid);
+      const memberName = p?.displayName || p?.username || 'Someone';
+      this.insertSystemMessage(id, {
+        text: `${creatorName} added ${memberName}`,
+        actorId: creatorId,
+        meta: { kind: 'member_added', userId: uid },
+      });
+    }
+
     return {
       data: {
         id,
@@ -778,6 +1016,17 @@ export const store = {
     }
     conversationMembers.set(conversationId, list);
     conv.updatedAt = now();
+    const actor = profiles.get(actorId);
+    const actorName = actor?.displayName || actor?.username || 'Someone';
+    for (const mid of added) {
+      const p = profiles.get(mid);
+      const memberName = p?.displayName || p?.username || 'Someone';
+      this.insertSystemMessage(conversationId, {
+        text: `${actorName} added ${memberName}`,
+        actorId,
+        meta: { kind: 'member_added', userId: mid },
+      });
+    }
     return {
       data: {
         added,
@@ -817,6 +1066,23 @@ export const store = {
     }
     target.leftAt = now();
     conv.updatedAt = now();
+    const actor = profiles.get(actorId);
+    const actorName = actor?.displayName || actor?.username || 'Someone';
+    const targetProf = profiles.get(targetId);
+    const targetName = targetProf?.displayName || targetProf?.username || 'Someone';
+    if (isSelf) {
+      this.insertSystemMessage(conversationId, {
+        text: `${targetName} left`,
+        actorId,
+        meta: { kind: 'member_left', userId: targetId },
+      });
+    } else {
+      this.insertSystemMessage(conversationId, {
+        text: `${actorName} removed ${targetName}`,
+        actorId,
+        meta: { kind: 'member_removed', userId: targetId },
+      });
+    }
     return { data: { removed: targetId, left: isSelf } };
   },
 
@@ -949,6 +1215,86 @@ export const store = {
   },
 
   // --- Call history ---
+
+  /**
+   * System call-log entry in the conversation timeline (not E2EE ciphertext).
+   */
+  insertCallLogMessage(conversationId, {
+    callerId,
+    calleeId,
+    kind = 'audio',
+    status = 'ended',
+    durationMs = 0,
+    callId = null,
+  }) {
+    if (!conversationId || !messages.has(conversationId)) {
+      // conversation may exist without messages array yet
+      if (!conversations.has(conversationId)) {
+        return { error: { code: 'NOT_FOUND', message: 'Conversation not found' } };
+      }
+      if (!messages.has(conversationId)) messages.set(conversationId, []);
+    }
+    const msg = {
+      id: randomUUID(),
+      conversationId,
+      senderId: callerId,
+      senderDeviceId: 0,
+      clientMessageId: `call-${callId || randomUUID()}`,
+      ciphertext: '',
+      protocolVersion: 'bambi-system-v1',
+      messageType: 'call',
+      createdAt: now(),
+      status: 'sent',
+      deliveredTo: [],
+      readBy: [],
+      call: {
+        callId,
+        callerId,
+        calleeId,
+        kind,
+        status,
+        durationMs: durationMs || 0,
+      },
+    };
+    messages.get(conversationId).push(msg);
+    const conv = conversations.get(conversationId);
+    if (conv) conv.updatedAt = now();
+    return { data: msg };
+  },
+
+
+  insertSystemMessage(conversationId, { text, actorId = null, meta = null }) {
+    if (!conversationId) {
+      return { error: { code: 'NOT_FOUND', message: 'Conversation not found' } };
+    }
+    if (!conversations.has(conversationId)) {
+      return { error: { code: 'NOT_FOUND', message: 'Conversation not found' } };
+    }
+    if (!messages.has(conversationId)) messages.set(conversationId, []);
+    const msg = {
+      id: randomUUID(),
+      conversationId,
+      senderId: actorId || 'system',
+      senderDeviceId: 0,
+      clientMessageId: `sys-${randomUUID()}`,
+      ciphertext: '',
+      protocolVersion: 'bambi-system-v1',
+      messageType: 'system',
+      createdAt: now(),
+      status: 'sent',
+      deliveredTo: [],
+      readBy: [],
+      system: {
+        text: String(text || '').slice(0, 300),
+        meta: meta || null,
+      },
+    };
+    messages.get(conversationId).push(msg);
+    const conv = conversations.get(conversationId);
+    if (conv) conv.updatedAt = now();
+    return { data: msg };
+  },
+
   async saveCallRecord(record) {
     callRecords.unshift({
       id: record.id || randomUUID(),

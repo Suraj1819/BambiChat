@@ -2,23 +2,28 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft, Camera, UserRound, ShieldCheck, Bell, Palette, MessageCircle, CircleHelp, LogOut,
   Check, Moon, Sun, Monitor, X, Smartphone, Info, Phone, Keyboard, Ban, Loader2,
+  Crown, HardDrive, Languages, HelpCircle, Star, Sparkles, Volume2, Vibrate,
 } from 'lucide-react';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { api } from '@/lib/api';
 import { usePreferences, setPreferences } from '@/lib/preferences';
 import { getThemePreference, setThemePreference } from '@/lib/theme';
+import { SOLID_COLORS, PATTERNS, getGlobalWallpaper, setGlobalWallpaper, compressImageFile } from '@/lib/wallpaper';
 
 const sections = [
-  { id: 'profile', label: 'Profile', icon: UserRound, description: 'Your name and profile photo' },
-  { id: 'account', label: 'Account', icon: Smartphone, description: 'Session and account information' },
-  { id: 'privacy', label: 'Privacy', icon: ShieldCheck, description: 'Encryption and blocked contacts' },
-  { id: 'notifications', label: 'Notifications', icon: Bell, description: 'Alerts and sounds' },
-  { id: 'calls', label: 'Calls', icon: Phone, description: 'Microphone, camera and speaker' },
-  { id: 'appearance', label: 'Appearance', icon: Palette, description: 'Theme and display' },
-  { id: 'chats', label: 'Chats', icon: MessageCircle, description: 'Typing and sending' },
-  { id: 'shortcuts', label: 'Shortcuts', icon: Keyboard, description: 'Keyboard shortcuts' },
-  { id: 'help', label: 'Help', icon: CircleHelp, description: 'About Bambi' },
+  { id: 'account', label: 'Account', icon: Smartphone, description: 'Phone, username, security and session' },
+  { id: 'premium', label: 'Bambi Premium', icon: Crown, description: 'Unlock exclusive features' },
+  { id: 'privacy', label: 'Privacy', icon: ShieldCheck, description: 'Last seen, read receipts, blocked contacts' },
+  { id: 'profile', label: 'Profile & avatar', icon: UserRound, description: 'Photo, about, display name' },
+  { id: 'chats', label: 'Chats', icon: MessageCircle, description: 'Theme, wallpapers, chat settings' },
+  { id: 'appearance', label: 'Appearance', icon: Palette, description: 'Light / dark theme and wallpaper' },
+  { id: 'notifications', label: 'Notifications', icon: Bell, description: 'Message, group and call alerts' },
+  { id: 'calls', label: 'Calls', icon: Phone, description: 'Call preferences and devices' },
+  { id: 'storage', label: 'Storage & data', icon: HardDrive, description: 'Media auto-download and cache' },
+  { id: 'language', label: 'Language', icon: Languages, description: 'App language' },
+  { id: 'help', label: 'Help', icon: HelpCircle, description: 'FAQ, contact support, about' },
+  { id: 'about', label: 'About', icon: Info, description: 'Version and legal' },
 ];
 
 function Toggle({ checked, onChange, label, description, disabled }) {
@@ -197,23 +202,226 @@ const SHORTCUTS = [
   ['Esc', 'Close dialogs, panels and menus'],
 ];
 
+
+
+function WallpaperPicker() {
+  const [current, setCurrent] = useState(() => getGlobalWallpaper());
+  const [error, setError] = useState('');
+  const fileRef = useRef(null);
+
+  const apply = (wallpaper) => {
+    setCurrent(wallpaper);
+    setGlobalWallpaper(wallpaper);
+    setError('');
+  };
+
+  const onCustom = async (file) => {
+    if (!file) return;
+    setError('');
+    try {
+      const dataUrl = await compressImageFile(file);
+      apply({ type: 'image', value: dataUrl });
+    } catch (e) {
+      setError(e?.message || 'Could not use image');
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm font-medium">Chat wallpaper (all chats)</p>
+      <p className="text-sm text-bambi-text-secondary">Stored on this device. Per-chat overrides can be set later from chat info.</p>
+      <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
+        {SOLID_COLORS.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            title={c.label}
+            onClick={() =>
+              apply(
+                c.value
+                  ? { type: 'solid', value: c.value }
+                  : { type: 'default' }
+              )
+            }
+            className={`aspect-square rounded-xl border-2 ${
+              (current.type === 'default' && c.id === 'default') ||
+              (current.type === 'solid' && current.value === c.value)
+                ? 'border-bambi-primary ring-2 ring-bambi-primary/30'
+                : 'border-bambi-border'
+            }`}
+            style={{
+              background:
+                c.value ||
+                'linear-gradient(135deg, rgb(var(--bambi-background)), rgb(var(--bambi-surface)))',
+            }}
+            aria-label={c.label}
+          />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {PATTERNS.filter((p) => p.id !== 'none').map((pat) => (
+          <button
+            key={pat.id}
+            type="button"
+            onClick={() =>
+              apply({
+                type: 'pattern',
+                patternId: pat.id,
+                value: '#0B141A',
+              })
+            }
+            className={`rounded-lg border px-3 py-1.5 text-xs ${
+              current.type === 'pattern' && current.patternId === pat.id
+                ? 'border-bambi-primary text-bambi-primary'
+                : 'border-bambi-border text-bambi-text-secondary'
+            }`}
+          >
+            {pat.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          className="rounded-lg border border-bambi-border px-3 py-1.5 text-xs text-bambi-text-secondary hover:text-bambi-text"
+        >
+          Custom image…
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            onCustom(e.target.files?.[0]);
+            e.target.value = '';
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => apply({ type: 'default' })}
+          className="rounded-lg border border-bambi-border px-3 py-1.5 text-xs text-bambi-text-secondary hover:text-bambi-text"
+        >
+          Reset
+        </button>
+      </div>
+      {error && <p className="text-sm text-bambi-error">{error}</p>}
+    </div>
+  );
+}
+
+function PrivacyControls() {
+  const [privacy, setPrivacy] = useState({
+    lastSeen: 'everyone',
+    onlineStatus: 'everyone',
+    profilePhoto: 'everyone',
+    readReceipts: true,
+  });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError('');
+      try {
+        const res = await api.getPrivacy();
+        if (!cancelled && res?.data) {
+          setPrivacy((p) => ({ ...p, ...res.data }));
+        }
+      } catch (e) {
+        if (!cancelled) setError(e?.message || 'Could not load privacy settings');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const update = async (patch) => {
+    const next = { ...privacy, ...patch };
+    setPrivacy(next);
+    setSaving(true);
+    setError('');
+    try {
+      const res = await api.updatePrivacy(patch);
+      if (res?.data) setPrivacy((p) => ({ ...p, ...res.data }));
+    } catch (e) {
+      setError(e?.message || 'Could not save privacy setting');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 rounded-xl border p-4 text-sm text-bambi-text-secondary">
+        <Loader2 className="h-4 w-4 animate-spin" /> Loading privacy settings…
+      </div>
+    );
+  }
+
+  const visOptions = [
+    { value: 'everyone', label: 'Everyone' },
+    { value: 'contacts', label: 'My contacts' },
+    { value: 'nobody', label: 'Nobody' },
+  ];
+
+  return (
+    <div className="divide-y rounded-xl border">
+      {[
+        { key: 'lastSeen', label: 'Last seen', description: 'Who can see when you were last online' },
+        { key: 'onlineStatus', label: 'Online status', description: 'Who can see when you are online' },
+        { key: 'profilePhoto', label: 'Profile photo', description: 'Who can see your profile photo' },
+      ].map((row) => (
+        <label key={row.key} className="block p-4">
+          <span className="block text-sm font-medium">{row.label}</span>
+          <span className="mt-1 block text-sm text-bambi-text-secondary">{row.description}</span>
+          <select
+            className="bambi-input mt-2"
+            value={privacy[row.key] || 'everyone'}
+            disabled={saving}
+            onChange={(e) => update({ [row.key]: e.target.value })}
+          >
+            {visOptions.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </label>
+      ))}
+      <Toggle
+        checked={Boolean(privacy.readReceipts)}
+        onChange={(checked) => update({ readReceipts: checked })}
+        label="Read receipts"
+        description="If turned off, you won’t send or receive read receipts"
+        disabled={saving}
+      />
+      {error && <p className="p-4 text-sm text-bambi-error" role="alert">{error}</p>}
+    </div>
+  );
+}
+
 export function SettingsPanel({ open, currentUser, onClose, onLogout, onProfileUpdated }) {
   const prefs = usePreferences();
-  const [section, setSection] = useState('profile');
+  const [section, setSection] = useState(null);
   const [avatarUrl, setAvatarUrl] = useState(currentUser?.avatarUrl || '');
   const [displayName, setDisplayName] = useState(currentUser?.displayName || '');
   const [saved, setSaved] = useState(false);
   const [avatarError, setAvatarError] = useState('');
   const [theme, setTheme] = useState(getThemePreference);
+  const [saving, setSaving] = useState(false);
+  const [about, setAbout] = useState(currentUser?.about || '');
   const fileRef = useRef(null);
 
   useEffect(() => {
     if (!open) return;
     setAvatarUrl(currentUser?.avatarUrl || '');
     setDisplayName(currentUser?.displayName || '');
+    setAbout(currentUser?.about || '');
     setSaved(false);
     setAvatarError('');
-  }, [open, currentUser?.avatarUrl, currentUser?.displayName]);
+  }, [open, currentUser?.avatarUrl, currentUser?.displayName, currentUser?.about]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -224,15 +432,40 @@ export function SettingsPanel({ open, currentUser, onClose, onLogout, onProfileU
 
   if (!open) return null;
 
-  const saveProfile = () => {
-    const profile = { avatarUrl, displayName: displayName.trim() || currentUser?.username || 'Bambi user' };
+  const saveProfile = async () => {
+    const profile = {
+      avatarUrl: avatarUrl || null,
+      displayName: displayName.trim() || currentUser?.username || 'Bambi user',
+      about: about.trim().slice(0, 500),
+    };
+    setSaving(true);
+    setAvatarError('');
     try {
-      localStorage.setItem(`bambi-profile-${currentUser?.id}`, JSON.stringify(profile));
-      onProfileUpdated?.(profile);
+      const res = await api.updateProfile(profile);
+      const data = res?.data || profile;
+      try {
+        localStorage.setItem(`bambi-profile-${currentUser?.id}`, JSON.stringify(data));
+      } catch { /* ignore */ }
+      onProfileUpdated?.(data);
       setSaved(true);
       window.setTimeout(() => setSaved(false), 2200);
-    } catch {
-      setAvatarError('Could not save — your browser storage may be full or disabled.');
+    } catch (err) {
+      // Fall back to local-only if API rejects (e.g. oversized data URL)
+      try {
+        localStorage.setItem(`bambi-profile-${currentUser?.id}`, JSON.stringify(profile));
+        onProfileUpdated?.(profile);
+        setSaved(true);
+        window.setTimeout(() => setSaved(false), 2200);
+        setAvatarError(
+          err?.message
+            ? `${err.message} — saved on this device only.`
+            : 'Server could not save profile. Stored on this device only.'
+        );
+      } catch {
+        setAvatarError(err?.message || 'Could not save profile.');
+      }
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -258,8 +491,8 @@ export function SettingsPanel({ open, currentUser, onClose, onLogout, onProfileU
     try { localStorage.setItem('bambi-notifications', checked ? 'on' : 'off'); } catch { /* ignore */ }
   };
 
-  const selected = sections.find((item) => item.id === section) || sections[0];
-  const SelectedIcon = selected.icon;
+  const selected = sections.find((item) => item.id === section);
+
   const notifPermission = 'Notification' in window ? Notification.permission : 'unsupported';
 
   const themeOptions = [
@@ -277,53 +510,83 @@ export function SettingsPanel({ open, currentUser, onClose, onLogout, onProfileU
         aria-modal="true"
         aria-label="Settings"
       >
-        <header className="flex h-16 shrink-0 items-center gap-3 border-b px-4 pt-[env(safe-area-inset-top)] sm:px-6 sm:pt-0">
-          <Button variant="icon" onClick={onClose} aria-label="Back to chat" title="Back to chat"><ArrowLeft className="h-5 w-5" /></Button>
+                <header className="flex h-14 shrink-0 items-center gap-3 border-b border-bambi-border px-3 pt-[env(safe-area-inset-top)] sm:h-16 sm:px-4 sm:pt-0">
+          <Button
+            variant="icon"
+            onClick={() => (section ? setSection(null) : onClose?.())}
+            aria-label={section ? 'Back to settings' : 'Back to chat'}
+            title={section ? 'Back' : 'Close'}
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
           <div className="min-w-0 flex-1">
-            <h2 className="text-lg font-semibold">Settings</h2>
+            <h2 className="text-lg font-semibold">
+              {section ? (sections.find((s) => s.id === section)?.label || 'Settings') : 'Settings'}
+            </h2>
           </div>
-          <Button variant="icon" onClick={onClose} aria-label="Close settings" title="Close"><X className="h-5 w-5" /></Button>
+          <Button variant="icon" onClick={onClose} aria-label="Close settings" title="Close">
+            <X className="h-5 w-5" />
+          </Button>
         </header>
 
-        <div className="flex min-h-0 flex-1">
-          <nav className="flex w-[68px] shrink-0 flex-col gap-1 overflow-y-auto border-r p-2 sm:w-60 sm:p-3" aria-label="Settings sections">
-            {sections.map((item) => {
-              const Icon = item.icon;
-              const active = item.id === section;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setSection(item.id)}
-                  className={`flex min-h-12 items-center gap-3 rounded-2xl px-2 py-2 text-left transition-colors sm:px-3 ${active ? 'bg-bambi-primary-light text-bambi-primary' : 'text-bambi-text-secondary hover:bg-bambi-background hover:text-bambi-text'}`}
-                  aria-current={active ? 'page' : undefined}
-                  title={item.label}
-                >
-                  <Icon className="mx-auto h-5 w-5 shrink-0 sm:mx-0" />
-                  <span className="hidden min-w-0 sm:block">
-                    <span className="block text-sm font-medium">{item.label}</span>
-                    <span className="mt-0.5 block truncate text-[11px] opacity-75">{item.description}</span>
-                  </span>
-                </button>
-              );
-            })}
-            <div className="mt-auto border-t pt-2">
-              <button type="button" onClick={onLogout} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-2xl px-2 text-sm font-medium text-bambi-error hover:bg-bambi-error/10 sm:justify-start sm:px-3">
-                <LogOut className="h-4 w-4 shrink-0" />
-                <span className="hidden sm:inline">Log out</span>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {!section ? (
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {/* WhatsApp-style profile header */}
+              <button
+                type="button"
+                onClick={() => setSection('profile')}
+                className="flex w-full items-center gap-4 border-b border-bambi-border px-4 py-4 text-left transition hover:bg-bambi-background sm:px-6"
+              >
+                <Avatar src={avatarUrl} name={displayName || currentUser?.username} size="lg" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-base font-semibold text-bambi-text">
+                    {displayName || currentUser?.username || 'Your profile'}
+                  </p>
+                  <p className="truncate text-sm text-bambi-text-secondary">
+                    {about?.trim() || 'Tap here for more info'}
+                  </p>
+                </div>
               </button>
-            </div>
-          </nav>
 
-          <main className="min-w-0 flex-1 overflow-y-auto p-4 sm:p-7">
-            <div className="mb-6 flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-bambi-primary-light text-bambi-primary"><SelectedIcon className="h-5 w-5" /></div>
-              <div>
-                <h3 className="text-xl font-semibold">{selected.label}</h3>
-                <p className="text-sm text-bambi-text-secondary">{selected.description}</p>
+              <div className="py-2">
+                {sections.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setSection(item.id)}
+                      className="flex w-full items-center gap-4 px-4 py-3.5 text-left transition hover:bg-bambi-background sm:px-6"
+                    >
+                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-bambi-background text-bambi-text-secondary">
+                        <Icon className="h-5 w-5" />
+                      </span>
+                      <span className="min-w-0 flex-1 border-b border-bambi-border pb-3.5">
+                        <span className="block text-[15px] font-medium text-bambi-text">{item.label}</span>
+                        <span className="mt-0.5 block truncate text-sm text-bambi-text-secondary">{item.description}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="border-t border-bambi-border px-4 py-4 sm:px-6">
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="flex w-full items-center gap-3 rounded-xl px-2 py-3 text-left text-bambi-error transition hover:bg-bambi-error/10"
+                >
+                  <LogOut className="h-5 w-5" />
+                  <span className="font-medium">Log out</span>
+                </button>
               </div>
             </div>
+          ) : (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
 
+
+          <main className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 sm:p-7">
             {section === 'profile' && (
               <div className="max-w-xl space-y-6">
                 <div className="flex flex-col items-center gap-3 rounded-2xl border bg-bambi-background/60 p-6 sm:flex-row">
@@ -345,12 +608,18 @@ export function SettingsPanel({ open, currentUser, onClose, onLogout, onProfileU
                   <span className="mb-2 block text-sm font-medium">Display name</span>
                   <input value={displayName} maxLength={60} onChange={(event) => { setDisplayName(event.target.value); setSaved(false); }} className="bambi-input" placeholder="Your display name" />
                 </label>
+                <label className="block">
+                  <span className="mb-2 block text-sm font-medium">About</span>
+                  <textarea value={about} maxLength={500} rows={3} onChange={(event) => { setAbout(event.target.value); setSaved(false); }} className="bambi-input resize-none" placeholder="A short bio" />
+                </label>
                 <div className="rounded-xl border p-3 text-xs leading-5 text-bambi-text-secondary">
-                  Your photo and display name are saved on this device only. The current API has no profile-update endpoint, so other people will not see these changes yet.
+                  Profile changes are saved to the server and broadcast to your friends in real time. Large custom photos may be stored as a data URL; prefer a hosted image URL when possible.
                 </div>
                 <div className="flex items-center gap-3">
-                  <Button variant="primary" onClick={saveProfile}>Save changes</Button>
-                  {saved && <span className="inline-flex items-center gap-1 text-sm text-bambi-success"><Check className="h-4 w-4" /> Saved on this device</span>}
+                  <Button variant="primary" onClick={saveProfile} disabled={saving}>
+                    {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save changes'}
+                  </Button>
+                  {saved && <span className="inline-flex items-center gap-1 text-sm text-bambi-success"><Check className="h-4 w-4" /> Saved</span>}
                 </div>
               </div>
             )}
@@ -367,12 +636,14 @@ export function SettingsPanel({ open, currentUser, onClose, onLogout, onProfileU
             {section === 'privacy' && (
               <div className="max-w-xl space-y-4">
                 <div className="flex gap-3 rounded-xl border p-4"><ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-bambi-success" /><div><p className="font-medium">End-to-end encryption</p><p className="mt-1 text-sm leading-6 text-bambi-text-secondary">Messages and files are encrypted on your device before they are sent. Audio and video calls use WebRTC’s built-in encryption between the two devices.</p></div></div>
+                <PrivacyControls />
                 <BlockedSection />
-                <p className="text-xs leading-5 text-bambi-text-secondary">Last-seen and read-receipt controls are not available because the current API does not support them.</p>
               </div>
             )}
 
             {section === 'notifications' && (
+              /* expanded */
+
               <div className="max-w-xl space-y-3">
                 <div className="divide-y rounded-xl border">
                   <Toggle label="Browser notifications" description="Show an alert for new messages and calls when this tab is in the background." checked={prefs.browserNotifications} onChange={changeNotifications} />
@@ -387,21 +658,25 @@ export function SettingsPanel({ open, currentUser, onClose, onLogout, onProfileU
             {section === 'calls' && <CallsSection />}
 
             {section === 'appearance' && (
-              <div className="max-w-xl space-y-3" role="radiogroup" aria-label="Theme">
-                {themeOptions.map(({ id, label, desc, icon: Icon }) => (
-                  <button
-                    key={id}
-                    type="button"
-                    role="radio"
-                    aria-checked={theme === id}
-                    onClick={() => changeTheme(id)}
-                    className={`flex w-full items-center gap-4 rounded-2xl border p-4 text-left ${theme === id ? 'border-bambi-primary bg-bambi-primary-light/50' : 'hover:bg-bambi-background'}`}
-                  >
-                    <Icon className="h-5 w-5" />
-                    <span className="flex-1"><span className="block font-medium">{label}</span><span className="text-sm text-bambi-text-secondary">{desc}</span></span>
-                    {theme === id && <Check className="h-5 w-5 text-bambi-primary" />}
-                  </button>
-                ))}
+              <div className="max-w-xl space-y-8">
+                <div className="space-y-3" role="radiogroup" aria-label="Theme">
+                  <p className="text-sm font-medium">Theme</p>
+                  {themeOptions.map(({ id, label, desc, icon: Icon }) => (
+                    <button
+                      key={id}
+                      type="button"
+                      role="radio"
+                      aria-checked={theme === id}
+                      onClick={() => changeTheme(id)}
+                      className={`flex w-full items-center gap-4 rounded-2xl border p-4 text-left ${theme === id ? 'border-bambi-primary bg-bambi-primary-light/50' : 'hover:bg-bambi-background'}`}
+                    >
+                      <Icon className="h-5 w-5" />
+                      <span className="flex-1"><span className="block font-medium">{label}</span><span className="text-sm text-bambi-text-secondary">{desc}</span></span>
+                      {theme === id && <Check className="h-5 w-5 text-bambi-primary" />}
+                    </button>
+                  ))}
+                </div>
+                <WallpaperPicker />
               </div>
             )}
 
@@ -426,6 +701,118 @@ export function SettingsPanel({ open, currentUser, onClose, onLogout, onProfileU
               </ul>
             )}
 
+            
+            {section === 'premium' && (
+              <div className="max-w-xl space-y-4">
+                <div className="rounded-2xl border border-bambi-primary/30 bg-gradient-to-br from-bambi-primary/15 to-transparent p-5">
+                  <div className="flex items-center gap-2 text-bambi-primary">
+                    <Crown className="h-5 w-5" />
+                    <p className="text-lg font-semibold">Bambi Premium</p>
+                  </div>
+                  <p className="mt-2 text-sm text-bambi-text-secondary">
+                    Support the app and unlock extra limits. Billing is not connected yet — this is a preview of upcoming plans.
+                  </p>
+                </div>
+                <div className="divide-y rounded-xl border">
+                  {[
+                    ['Unlimited wallpapers', 'Custom photo wallpapers for every chat'],
+                    ['Larger media', 'Send files up to 100 MB'],
+                    ['Premium badge', 'Show a star on your profile'],
+                    ['Priority support', 'Faster help when you need it'],
+                  ].map(([title, desc]) => (
+                    <div key={title} className="flex items-start gap-3 p-4">
+                      <Star className="mt-0.5 h-4 w-4 shrink-0 text-bambi-primary" />
+                      <div>
+                        <p className="text-sm font-medium">{title}</p>
+                        <p className="text-xs text-bambi-text-secondary">{desc}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <button type="button" className="w-full rounded-xl bg-bambi-primary py-3 text-sm font-semibold text-white opacity-80" disabled>
+                  Coming soon
+                </button>
+              </div>
+            )}
+
+            {section === 'storage' && (
+              <div className="max-w-xl space-y-3">
+                <div className="rounded-xl border p-4">
+                  <p className="font-medium">Media auto-download</p>
+                  <p className="mt-1 text-sm text-bambi-text-secondary">Photos and files download when you open them. Voice messages play after decrypt.</p>
+                </div>
+                <div className="rounded-xl border p-4">
+                  <p className="font-medium">Network usage</p>
+                  <p className="mt-1 text-sm text-bambi-text-secondary">On mobile data, prefer Wi‑Fi for large videos. (Preference stored on this device.)</p>
+                </div>
+                <div className="rounded-xl border p-4">
+                  <p className="font-medium">Clear local cache</p>
+                  <p className="mt-1 text-sm text-bambi-text-secondary">Message previews and wallpaper choices stay. Encrypted history is re-fetched from the server when needed.</p>
+                  <button
+                    type="button"
+                    className="mt-3 rounded-lg border border-bambi-border px-3 py-2 text-sm hover:bg-bambi-background"
+                    onClick={() => {
+                      try {
+                        localStorage.removeItem('bambi-message-previews');
+                        alert('Local message previews cleared.');
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                  >
+                    Clear previews
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {section === 'language' && (
+              <div className="max-w-xl space-y-3">
+                <div className="rounded-xl border p-4">
+                  <p className="font-medium">App language</p>
+                  <p className="mt-1 text-sm text-bambi-text-secondary">Currently English. More languages will be added in a future update.</p>
+                  <select className="mt-3 w-full rounded-lg border border-bambi-border bg-bambi-surface px-3 py-2 text-sm" defaultValue="en" disabled>
+                    <option value="en">English</option>
+                    <option value="hi">Hindi (coming soon)</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {section === 'about' && (
+              <div className="max-w-xl space-y-3">
+                <div className="rounded-xl border p-4">
+                  <p className="font-medium">Bambi Chat</p>
+                  <p className="mt-1 text-sm text-bambi-text-secondary">Version 1.0 · End-to-end encrypted messaging</p>
+                </div>
+                <div className="rounded-xl border p-4 text-sm text-bambi-text-secondary">
+                  Private by design. Messages are encrypted on your device. The server cannot read message text.
+                </div>
+              </div>
+            )}
+
+            {section === 'account' && (
+              <div className="max-w-xl space-y-3">
+                <div className="rounded-xl border p-4">
+                  <p className="text-xs text-bambi-text-secondary">Username</p>
+                  <p className="font-medium">@{currentUser?.username || '—'}</p>
+                </div>
+                <div className="rounded-xl border p-4">
+                  <p className="text-xs text-bambi-text-secondary">Phone</p>
+                  <p className="font-medium">{currentUser?.phone || 'Not set on this profile'}</p>
+                </div>
+                <div className="rounded-xl border p-4">
+                  <p className="text-xs text-bambi-text-secondary">Display name</p>
+                  <p className="font-medium">{currentUser?.displayName || currentUser?.username || '—'}</p>
+                </div>
+                <div className="rounded-xl border p-4">
+                  <p className="font-medium">Session</p>
+                  <p className="mt-1 text-sm text-bambi-text-secondary">You stay signed in on this device until you log out.</p>
+                </div>
+              </div>
+            )}
+
+
             {section === 'help' && (
               <div className="max-w-xl space-y-3">
                 <div className="rounded-xl border p-4"><p className="font-medium">Bambi Messenger</p><p className="mt-1 text-sm text-bambi-text-secondary">Encrypted messages, group chats, file sharing and one-to-one audio and video calls.</p></div>
@@ -433,6 +820,8 @@ export function SettingsPanel({ open, currentUser, onClose, onLogout, onProfileU
               </div>
             )}
           </main>
+          </div>
+          )}
         </div>
       </section>
     </div>

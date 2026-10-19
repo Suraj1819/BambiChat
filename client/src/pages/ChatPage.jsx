@@ -1,5 +1,5 @@
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { AppShell } from '@/components/layout/AppShell';
@@ -34,6 +34,11 @@ import {
 import { Button } from '@/components/ui/Button';
 import { api } from '@/lib/api';
 import { getSessionUser, clearSession } from '@/lib/session';
+import {
+  setMessagePreview,
+  applyPreviewsToConversations,
+  previewTextFromBody,
+} from '@/lib/messagePreviews';
 
 import {
   connectSocket,
@@ -179,6 +184,8 @@ export function ChatPage() {
   const [friends, setFriends] = useState([]);
   const [loadingList, setLoadingList] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
   const [cryptoReady, setCryptoReady] = useState(false);
   const [connected, setConnected] = useState(false);
   const [typingUsers, setTypingUsers] = useState({});
@@ -190,6 +197,7 @@ export function ChatPage() {
   const [friendRequests, setFriendRequests] = useState([]);
   const [groupOpen, setGroupOpen] = useState(false);
   const [groupInfoOpen, setGroupInfoOpen] = useState(false);
+  const [groupMembersExtra, setGroupMembersExtra] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [filter, setFilter] = useState('all');
@@ -211,6 +219,71 @@ export function ChatPage() {
   const isGroup =
     activeConversation?.isGroup ||
     activeConversation?.type === 'group';
+
+  const groupMemberMap = useMemo(() => {
+    const map = {};
+    if (me?.id) {
+      map[String(me.id)] = {
+        displayName: me.displayName || me.username,
+        username: me.username,
+        avatarUrl: me.avatarUrl,
+      };
+    }
+    for (const f of friends) {
+      const id = f.id ?? f.userId;
+      if (id == null) continue;
+      map[String(id)] = {
+        displayName: f.displayName || f.display_name || f.username,
+        username: f.username,
+        avatarUrl: getAvatarUrl(f),
+      };
+    }
+    // Also map from conversation members if present
+    const members = activeConversation?.members || [];
+    for (const m of members) {
+      const id = m.userId ?? m.id;
+      if (id == null) continue;
+      const prof = m.profile || m;
+      map[String(id)] = {
+        displayName:
+          prof.displayName || prof.display_name || prof.username || map[String(id)]?.displayName,
+        username: prof.username || map[String(id)]?.username,
+        avatarUrl: getAvatarUrl(prof) || map[String(id)]?.avatarUrl,
+      };
+    }
+    for (const m of groupMembersExtra) {
+      const id = m.userId ?? m.id;
+      if (id == null) continue;
+      const prof = m.profile || m;
+      map[String(id)] = {
+        displayName:
+          prof.displayName || prof.display_name || prof.username || map[String(id)]?.displayName,
+        username: prof.username || map[String(id)]?.username,
+        avatarUrl: getAvatarUrl(prof) || map[String(id)]?.avatarUrl,
+      };
+    }
+    return map;
+  }, [me, friends, activeConversation, groupMembersExtra]);
+
+  useEffect(() => {
+    if (!activeId || !isGroup) {
+      setGroupMembersExtra([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.getGroup(activeId);
+        if (!cancelled && res.data?.members) {
+          setGroupMembersExtra(res.data.members);
+        }
+      } catch {
+        if (!cancelled) setGroupMembersExtra([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeId, isGroup]);
+
 
   const resolveCallPeer = useCallback((peerId) => {
     const conversation = conversationsRef.current.find((item) =>
@@ -249,6 +322,33 @@ export function ChatPage() {
     setGroupInfoOpen(false);
     setChatSearchOpen(false);
     setChatSearch('');
+  }, []);
+
+  useEffect(() => {
+    const onOpen = (e) => {
+      const id = e?.detail?.conversationId;
+      if (id) openConversation(id);
+    };
+    window.addEventListener('bambi-open-conversation', onOpen);
+    return () => window.removeEventListener('bambi-open-conversation', onOpen);
+  }, [openConversation]);
+
+
+  const updateConversationPreview = useCallback((conversationId, body, attachment, at, senderId, call = null) => {
+    const text = previewTextFromBody(body, attachment, call);
+    if (!text) return;
+    setMessagePreview(conversationId, { text, at, senderId });
+    setConversations((previous) =>
+      previous
+        .map((c) =>
+          sameId(c.id, conversationId)
+            ? { ...c, lastMessage: text, lastMessageAt: at || new Date().toISOString() }
+            : c
+        )
+        .sort((a, b) =>
+          String(b.lastMessageAt || '').localeCompare(String(a.lastMessageAt || ''))
+        )
+    );
   }, []);
 
   const initCrypto = useCallback(async (uid) => {
@@ -307,9 +407,8 @@ export function ChatPage() {
         ? convRes.data
         : [];
 
-      const nextConversations = mergeConversationProfiles(
-        rawConversations,
-        nextFriends
+      const nextConversations = applyPreviewsToConversations(
+        mergeConversationProfiles(rawConversations, nextFriends)
       );
 
       setMe({
@@ -386,6 +485,54 @@ export function ChatPage() {
   }
 
   async function decryptRawMessage(message, conversation) {
+    // System / call-log messages are not E2EE ciphertext
+    if (message.messageType === 'system' || message.system) {
+      return {
+        id: message.id,
+        clientMessageId: message.clientMessageId,
+        senderId: message.senderId,
+        body: message.system?.text || message.body || '',
+        createdAt: message.createdAt,
+        status: 'sent',
+        encrypted: false,
+        system: true,
+        messageType: 'system',
+        systemMeta: message.system || null,
+      };
+    }
+
+    if (
+      message.messageType === 'call' ||
+      message.protocolVersion === 'bambi-system-v1' ||
+      message.call
+    ) {
+      let call = message.call || null;
+      if (!call && message.ciphertext) {
+        try {
+          call = JSON.parse(message.ciphertext);
+        } catch {
+          call = null;
+        }
+      }
+      return {
+        id: message.id,
+        clientMessageId: message.clientMessageId,
+        senderId: message.senderId,
+        body: '',
+        createdAt: message.createdAt,
+        status: message.status || 'sent',
+        encrypted: false,
+        system: true,
+        messageType: 'call',
+        call: call || {
+          callerId: message.senderId,
+          kind: 'audio',
+          status: 'ended',
+          durationMs: 0,
+        },
+      };
+    }
+
     const groupMessage =
       conversation?.isGroup ||
       conversation?.type === 'group' ||
@@ -600,14 +747,56 @@ export function ChatPage() {
 
           return [...previous, decrypted];
         });
+
+        updateConversationPreview(
+          message.conversationId,
+          decrypted.body,
+          decrypted.attachment,
+          decrypted.createdAt || message.createdAt,
+          decrypted.senderId || message.senderId,
+          decrypted.call || null
+        );
       } catch {
         // Ignore malformed messages without breaking the socket.
       }
 
+      // Refresh list metadata (unread etc.) without wiping local previews
       loadList();
     };
 
-    const onMessageNotify = () => loadList();
+    const onMessageNotify = (payload) => {
+      loadList();
+      try {
+        const prefs = JSON.parse(localStorage.getItem('bambi-preferences') || '{}');
+        if (prefs.browserNotifications === false) return;
+        if (!('Notification' in window) || Notification.permission !== 'granted') return;
+        if (document.visibilityState === 'visible' && sameId(payload?.conversationId, activeIdRef.current)) {
+          return;
+        }
+        const title = 'New message';
+        const body = 'You have a new encrypted message';
+        const n = new Notification(title, {
+          body,
+          tag: payload?.conversationId || 'bambi-msg',
+          silent: false,
+        });
+        n.onclick = () => {
+          window.focus();
+          if (payload?.conversationId) {
+            // openConversation is stable via ref path
+            activeIdRef.current = payload.conversationId;
+            window.dispatchEvent(
+              new CustomEvent('bambi-open-conversation', {
+                detail: { conversationId: payload.conversationId },
+              })
+            );
+          }
+          n.close();
+        };
+      } catch {
+        /* ignore notification errors */
+      }
+    };
 
     const onMessageReceipt = ({ messageId, status }) => {
       setMessages((previous) =>
@@ -719,6 +908,51 @@ export function ChatPage() {
       });
     };
 
+    const onProfileUpdated = (payload) => {
+      if (!payload?.userId) return;
+      const peerId = String(payload.userId);
+
+      // Update self
+      if (sameId(payload.userId, userId)) {
+        setMe((current) => ({
+          ...current,
+          displayName: payload.displayName ?? current?.displayName,
+          avatarUrl: payload.avatarUrl ?? current?.avatarUrl,
+          about: payload.about ?? current?.about,
+        }));
+      }
+
+      // Update conversation list avatars/names
+      setConversations((previous) =>
+        previous.map((conversation) => {
+          const convPeer = getPeerId(conversation);
+          if (!convPeer || String(convPeer) !== peerId) return conversation;
+          return {
+            ...conversation,
+            name: payload.displayName || conversation.name,
+            avatarUrl:
+              payload.avatarUrl !== undefined
+                ? payload.avatarUrl
+                : conversation.avatarUrl,
+          };
+        })
+      );
+
+      // Update friends cache
+      setFriends((previous) =>
+        previous.map((friend) => {
+          if (!sameId(friend.id ?? friend.userId, payload.userId)) return friend;
+          return {
+            ...friend,
+            displayName: payload.displayName ?? friend.displayName,
+            avatarUrl:
+              payload.avatarUrl !== undefined ? payload.avatarUrl : friend.avatarUrl,
+            about: payload.about ?? friend.about,
+          };
+        })
+      );
+    };
+
     const onConnectionReady = () => setConnected(true);
 
     (async () => {
@@ -742,6 +976,7 @@ export function ChatPage() {
       socket.on('typing:update', onTypingUpdate);
       socket.on('presence:update', onPresenceUpdate);
       socket.on('presence:snapshot', onPresenceSnapshot);
+      socket.on('profile:updated', onProfileUpdated);
       socket.on('connect', requestPresence);
 
       if (socket.connected) {
@@ -763,6 +998,7 @@ export function ChatPage() {
         socket.off('typing:update', onTypingUpdate);
         socket.off('presence:update', onPresenceUpdate);
         socket.off('presence:snapshot', onPresenceSnapshot);
+        socket.off('profile:updated', onProfileUpdated);
         socket.off('connect', requestPresence);
       }
 
@@ -785,13 +1021,16 @@ export function ChatPage() {
     setMessages([]);
     setTypingUsers({});
     setLoadingMessages(true);
+    setHasMoreOlder(false);
+    setLoadingOlder(false);
 
     (async () => {
       try {
         await joinConversation(conversationId);
 
-        const response = await api.getMessages(conversationId);
+        const response = await api.getMessages(conversationId, { limit: 50 });
         const rawMessages = response.data || [];
+        setHasMoreOlder(Boolean(response.hasMore));
 
         const conversation = conversationsRef.current.find((item) =>
           sameId(item.id, conversationId)
@@ -829,6 +1068,18 @@ export function ChatPage() {
         if (!sameId(activeIdRef.current, conversationId)) return;
 
         setMessages(decryptedMessages);
+
+        if (decryptedMessages.length) {
+          const last = decryptedMessages[decryptedMessages.length - 1];
+          updateConversationPreview(
+            conversationId,
+            last.body,
+            last.attachment,
+            last.createdAt,
+            last.senderId,
+            last.call || null
+          );
+        }
 
         if (unreadMessageIds.length) {
           unreadMessageIds.forEach((messageId) =>
@@ -1039,6 +1290,13 @@ export function ChatPage() {
     };
 
     setMessages((previous) => [...previous, optimisticMessage]);
+    updateConversationPreview(
+      activeIdRef.current,
+      optimisticBody,
+      null,
+      optimisticMessage.createdAt,
+      userId
+    );
 
     const plaintext =
       typeof plaintextObject === 'string'
@@ -1156,6 +1414,81 @@ export function ChatPage() {
     loadList();
   };
 
+
+  const messagesRef = useRef([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  const loadOlderMessages = useCallback(async () => {
+    const conversationId = activeIdRef.current;
+    if (!conversationId) return;
+    setLoadingOlder((already) => {
+      if (already) return already;
+      return true;
+    });
+    // Use functional checks via refs to avoid stale closures / stuck spinner
+    const oldest = messagesRef.current[0];
+    const before = oldest?.id;
+    if (!before) {
+      setLoadingOlder(false);
+      setHasMoreOlder(false);
+      return;
+    }
+
+    try {
+      const response = await api.getMessages(conversationId, { limit: 50, before });
+      const rawMessages = response.data || [];
+      setHasMoreOlder(Boolean(response.hasMore));
+      if (!rawMessages.length) {
+        setHasMoreOlder(false);
+        return;
+      }
+
+      const conversation = conversationsRef.current.find((item) =>
+        sameId(item.id, conversationId)
+      );
+
+      const decryptedMessages = [];
+      for (const message of rawMessages) {
+        try {
+          const decrypted = await decryptRawMessage(
+            { ...message, conversationId },
+            conversation
+          );
+          decryptedMessages.push(decrypted);
+        } catch {
+          decryptedMessages.push({
+            id: message.id,
+            clientMessageId: message.clientMessageId,
+            senderId: message.senderId,
+            body: '[decryption failed]',
+            createdAt: message.createdAt,
+            status: message.status,
+            encrypted: true,
+          });
+        }
+      }
+
+      if (!sameId(activeIdRef.current, conversationId)) return;
+
+      setMessages((previous) => {
+        const existing = new Set(
+          previous.map((m) => m.id || m.clientMessageId).filter(Boolean)
+        );
+        const unique = decryptedMessages.filter(
+          (m) => !existing.has(m.id) && !existing.has(m.clientMessageId)
+        );
+        return [...unique, ...previous];
+      });
+    } catch (e) {
+      setError(e.message || 'Failed to load older messages');
+      setHasMoreOlder(false);
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, []);
+
   const handleSend = async (text) => {
     if (!activeId || !cryptoReady || !userId) return false;
 
@@ -1233,6 +1566,17 @@ export function ChatPage() {
         fileIvB64,
       });
 
+      updateConversationPreview(
+        activeId,
+        '',
+        {
+          filename: file.name,
+          mime: file.type || 'application/octet-stream',
+        },
+        new Date().toISOString(),
+        userId
+      );
+
       setUploadProgress(100);
     } catch (e) {
       setError(e.message || 'Attachment failed');
@@ -1288,6 +1632,7 @@ export function ChatPage() {
             onNewChat={() => setSearchOpen(true)}
             onNewGroup={() => setGroupOpen(true)}
             onOpenSettings={() => setSettingsOpen(true)}
+            onLogout={handleLogout}
             onOpenFriends={() => setFriendsOpen(true)}
             incomingRequestCount={friendRequests.length}
           >
@@ -1436,6 +1781,12 @@ export function ChatPage() {
                 messages={visibleMessages}
                 currentUserId={userId}
                 isLoading={loadingMessages}
+                isLoadingOlder={loadingOlder}
+                hasMoreOlder={hasMoreOlder && !trimmedSearch}
+                onLoadOlder={loadOlderMessages}
+                conversationId={activeId}
+                isGroup={Boolean(activeConversation?.isGroup || activeConversation?.type === 'group')}
+                memberMap={groupMemberMap}
                 highlight={trimmedSearch ? chatSearch.trim() : ''}
                 emptyLabel={
                   trimmedSearch ? 'No matching messages' : undefined

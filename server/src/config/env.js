@@ -19,7 +19,13 @@ export const env = {
   clientOrigin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
   supabaseUrl: process.env.SUPABASE_URL || '',
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
+  resendApiKey: process.env.RESEND_API_KEY || '',
+  resendFrom: process.env.RESEND_FROM || 'Bambi Chat <onboarding@resend.dev>',
   databaseUrl: process.env.DATABASE_URL || '',
   isDev: (process.env.NODE_ENV || 'development') === 'development',
   usePostgres: Boolean(process.env.DATABASE_URL && process.env.DATABASE_URL.includes('postgres')),
 };
+
+// OTP: set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+// Dashboard → Authentication → Providers → Email (enable)
+// Dashboard → Project Settings → Auth → SMTP / Sender: name "Bambi Chat"

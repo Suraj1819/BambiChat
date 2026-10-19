@@ -75,8 +75,8 @@ export function CreateGroupDialog({ open, onClose, onCreated }) {
               Add friends ({selected.size} selected)
             </p>
             {friends.length === 0 ? (
-              <p className="px-3 py-6 text-center text-body-sm text-bambi-text-secondary">
-                Add friends first, then create a group.
+              <p className="px-3 py-6 text-center text-sm text-bambi-text-secondary">
+                No friends yet. You can still create a group and add people later, or use Find people to add friends first.
               </p>
             ) : (
               friends.map((f) => (

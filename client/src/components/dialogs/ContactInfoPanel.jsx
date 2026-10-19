@@ -45,6 +45,8 @@ export function ContactInfoPanel({
   if (!open || !conversation) return null;
   const { name, avatarUrl, isOnline, peerUserId } = conversation;
   const username = conversation.username || conversation.peerUsername;
+  const phone = conversation.phone || conversation.peerPhone || '';
+  const about = conversation.about || conversation.peerAbout || '';
 
   const download = async (message) => {
     const att = message.attachment;
@@ -113,6 +115,13 @@ export function ContactInfoPanel({
           <div className="scale-[1.9] py-9"><Avatar src={avatarUrl} name={name} size="xl" online={isOnline} /></div>
           <h3 className="mt-3 max-w-full break-words text-xl font-semibold">{name}</h3>
           {username && <p className="text-sm text-bambi-text-secondary">@{username}</p>}
+          {phone && (
+            <p className="mt-1 flex items-center justify-center gap-1.5 text-sm text-bambi-text">
+              <Phone className="h-3.5 w-3.5 text-bambi-primary" />
+              {phone}
+            </p>
+          )}
+          {about && <p className="mt-2 max-w-sm text-sm text-bambi-text-secondary">{about}</p>}
           <p className={`mt-1 text-sm ${isOnline ? 'text-bambi-success' : 'text-bambi-text-secondary'}`}>{isOnline ? 'Online' : 'Offline'}</p>
           <div className="mt-5 flex w-full gap-2">
             <ActionPill icon={Phone} label="Audio" onClick={() => { onClose?.(); onAudioCall?.(); }} disabled={callsDisabled} title={callsDisabled ? callsDisabledReason : undefined} />

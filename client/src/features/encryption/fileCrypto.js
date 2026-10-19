@@ -80,7 +80,12 @@ export function isAllowedMime(mime) {
     'application/vnd.ms-excel',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   ];
-  return allowed.includes(mime) || mime.startsWith('image/');
+  return (
+    allowed.includes(mime) ||
+    mime.startsWith('image/') ||
+    mime.startsWith('audio/') ||
+    mime.startsWith('video/')
+  );
 }
 
 export const MAX_FILE_BYTES = 15 * 1024 * 1024; // 15 MB

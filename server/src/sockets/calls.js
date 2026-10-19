@@ -27,26 +27,61 @@ function release(callId, finalStatus = 'ended') {
   return c;
 }
 
-async function persistCallRecord(c, status) {
-  if (typeof store.saveCallRecord !== 'function') return;
+async function persistCallRecord(io, c, status) {
+  if (!c) return null;
+  const durationMs =
+    c.connectedAt && c.endedAt
+      ? Math.max(0, c.endedAt - c.connectedAt)
+      : 0;
   try {
-    await store.saveCallRecord({
-      id: c.id || c.callId,
-      callerId: c.a,
-      calleeId: c.b,
-      conversationId: c.conversationId || null,
-      kind: c.kind,
-      status,
-      startedAt: c.startedAt ? new Date(c.startedAt).toISOString() : new Date().toISOString(),
-      endedAt: c.endedAt ? new Date(c.endedAt).toISOString() : new Date().toISOString(),
-      durationMs:
-        c.connectedAt && c.endedAt
-          ? Math.max(0, c.endedAt - c.connectedAt)
-          : 0,
-    });
+    if (typeof store.saveCallRecord === 'function') {
+      await store.saveCallRecord({
+        id: c.id || c.callId,
+        callerId: c.a,
+        calleeId: c.b,
+        conversationId: c.conversationId || null,
+        kind: c.kind,
+        status,
+        startedAt: c.startedAt ? new Date(c.startedAt).toISOString() : new Date().toISOString(),
+        endedAt: c.endedAt ? new Date(c.endedAt).toISOString() : new Date().toISOString(),
+        durationMs,
+      });
+    }
   } catch {
     /* non-fatal */
   }
+
+  // Insert a visible call-log row in the chat timeline
+  if (c.conversationId && typeof store.insertCallLogMessage === 'function') {
+    try {
+      const result = await store.insertCallLogMessage(c.conversationId, {
+        callerId: c.a,
+        calleeId: c.b,
+        kind: c.kind || 'audio',
+        status,
+        durationMs,
+        callId: c.id || c.callId,
+      });
+      const msg = result?.data;
+      if (msg && io) {
+        io.to(`conv:${c.conversationId}`).emit('message:new', { message: msg });
+        for (const uid of [c.a, c.b]) {
+          io.to(`user:${uid}`).emit('message:new', { message: msg });
+          io.to(`user:${uid}`).emit('message:notify', {
+            conversationId: c.conversationId,
+            messageId: msg.id,
+            senderId: c.a,
+            createdAt: msg.createdAt,
+            kind: 'call',
+          });
+        }
+      }
+      return msg;
+    } catch {
+      /* non-fatal */
+    }
+  }
+  return null;
 }
 
 export function registerCallHandlers(io, socket) {
@@ -104,7 +139,7 @@ export function registerCallHandlers(io, socket) {
       const sockets = await io.in(room(toUserId)).fetchSockets();
       if (sockets.length === 0) {
         // Persist as missed so callee sees it later
-        await persistCallRecord(
+        await persistCallRecord(io, 
           {
             id: callId,
             a: me,
@@ -138,7 +173,7 @@ export function registerCallHandlers(io, socket) {
         if (!still || still.status !== 'ringing') return;
         const released = release(callId, 'missed');
         if (released) {
-          await persistCallRecord(released, 'missed');
+          await persistCallRecord(io, released, 'missed');
           io.to(room(released.a)).emit('call:missed', {
             callId,
             fromUserId: released.b,
@@ -213,7 +248,7 @@ export function registerCallHandlers(io, socket) {
     if (c.ringTimer) clearTimeout(c.ringTimer);
     const reason = p.reason === 'busy' ? 'busy' : 'declined';
     const released = release(p.callId, reason);
-    if (released) await persistCallRecord(released, reason);
+    if (released) await persistCallRecord(io, released, reason);
     io.to(room(p.toUserId)).emit('call:rejected', {
       callId: p.callId,
       fromUserId: me,
@@ -227,7 +262,7 @@ export function registerCallHandlers(io, socket) {
     if (c.ringTimer) clearTimeout(c.ringTimer);
     const status = c.status === 'ringing' ? 'cancelled' : 'ended';
     const released = release(p.callId, status);
-    if (released) await persistCallRecord(released, status);
+    if (released) await persistCallRecord(io, released, status);
     io.to(room(p.toUserId)).emit('call:ended', { callId: p.callId, fromUserId: me });
   });
 
@@ -255,7 +290,7 @@ export function registerCallHandlers(io, socket) {
       if (c?.ringTimer) clearTimeout(c.ringTimer);
       const released = release(callId, 'ended');
       if (released) {
-        await persistCallRecord(released, 'ended');
+        await persistCallRecord(io, released, 'ended');
         const other = released.a === me ? released.b : released.a;
         io.to(room(other)).emit('call:ended', { callId, fromUserId: me });
       }

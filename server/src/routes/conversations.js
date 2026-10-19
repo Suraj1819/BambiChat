@@ -54,7 +54,9 @@ router.post('/direct', requireAuth, async (req, res, next) => {
 
 router.get('/:id/messages', requireAuth, async (req, res, next) => {
   try {
-    const result = await store.getMessages(req.params.id, req.user.id);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
+    const before = req.query.before || null;
+    const result = await store.getMessages(req.params.id, req.user.id, limit, before);
     if (result.error) {
       return res.status(result.error.code === 'FORBIDDEN' ? 403 : 404).json({ error: result.error });
     }

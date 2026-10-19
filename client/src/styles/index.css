@@ -5,30 +5,35 @@
 @layer base {
   :root {
     color-scheme: light;
-    --bambi-primary: 112 86 255;
-    --bambi-primary-dark: 87 62 225;
-    --bambi-primary-light: 239 235 255;
-    --bambi-background: 246 247 251;
+    --bambi-primary: 0 168 132;
+    --bambi-primary-dark: 0 140 110;
+    --bambi-primary-light: 232 248 244;
+    --bambi-background: 240 242 245;
     --bambi-surface: 255 255 255;
-    --bambi-text: 25 27 42;
-    --bambi-text-secondary: 120 124 145;
-    --bambi-border: 229 231 240;
-    --bambi-success: 22 163 112;
+    --bambi-text: 17 27 33;
+    --bambi-text-secondary: 102 119 129;
+    --bambi-border: 229 231 235;
+    --bambi-success: 0 168 132;
     --bambi-error: 220 65 85;
+    --bambi-bubble-in: 255 255 255;
+    --bambi-bubble-out: 217 253 211;
   }
 
   .dark {
     color-scheme: dark;
-    --bambi-primary: 151 132 255;
-    --bambi-primary-dark: 125 103 245;
-    --bambi-primary-light: 47 40 75;
-    --bambi-background: 14 16 24;
-    --bambi-surface: 22 25 36;
-    --bambi-text: 242 244 251;
-    --bambi-text-secondary: 153 160 180;
-    --bambi-border: 43 47 64;
-    --bambi-success: 52 211 153;
-    --bambi-error: 251 113 133;
+    /* WhatsApp-inspired messaging palette */
+    --bambi-primary: 0 168 132;          /* #00A884 */
+    --bambi-primary-dark: 0 140 110;
+    --bambi-primary-light: 17 40 36;
+    --bambi-background: 11 20 26;        /* #0B141A */
+    --bambi-surface: 17 27 33;           /* #111B21 */
+    --bambi-text: 233 237 239;           /* #E9EDEF */
+    --bambi-text-secondary: 134 150 160; /* #8696A0 */
+    --bambi-border: 34 45 53;
+    --bambi-success: 0 168 132;
+    --bambi-error: 239 105 105;
+    --bambi-bubble-in: 32 44 51;         /* #202C33 */
+    --bambi-bubble-out: 0 92 75;         /* #005C4B */
   }
 
   * { @apply border-bambi-border; }
@@ -272,4 +277,86 @@ button { touch-action: manipulation; }
 }
 .dark .message-composer textarea::placeholder {
   color: rgb(var(--bambi-text-secondary)) !important;
+}
+
+
+/* WhatsApp-style message bubbles */
+.message-bubble-own {
+  background: rgb(var(--bambi-bubble-out)) !important;
+  border-radius: 8px 8px 0 8px;
+  color: #111B21 !important;
+}
+.message-bubble-own .text-white,
+.message-bubble-own .text-white\/75 {
+  color: inherit !important;
+}
+/* Time + ticks on outgoing: readable in light and dark */
+.message-bubble-own .msg-meta {
+  color: rgba(17, 27, 33, 0.55) !important;
+}
+.dark .message-bubble-own {
+  color: #E9EDEF !important;
+}
+.dark .message-bubble-own .msg-meta {
+  color: rgba(233, 237, 239, 0.7) !important;
+}
+.message-bubble-peer {
+  background: rgb(var(--bambi-bubble-in)) !important;
+  border-radius: 8px 8px 8px 0;
+  color: rgb(var(--bambi-text)) !important;
+}
+.message-bubble-peer .msg-meta {
+  color: rgb(var(--bambi-text-secondary)) !important;
+}
+/* Light mode outgoing bubble is soft green — keep ticks darker */
+:root:not(.dark) .message-bubble-own {
+  color: #111B21 !important;
+}
+:root:not(.dark) .message-bubble-own svg {
+  color: rgba(17, 27, 33, 0.55);
+}
+:root:not(.dark) .message-bubble-own svg.text-sky-300 {
+  color: #53bdeb !important;
+}
+.dark .message-bubble-own svg.text-sky-300 {
+  color: #53bdeb !important;
+}
+.message-wallpaper {
+  background-color: rgb(var(--bambi-background));
+  background-attachment: local;
+}
+.dark .message-wallpaper {
+  background-color: #0B141A;
+}
+.jump-to-latest {
+  background: rgb(var(--bambi-surface));
+  border: 1px solid rgb(var(--bambi-border));
+  box-shadow: 0 4px 16px rgb(0 0 0 / .25);
+}
+
+
+/* Full-height chat surface — prevent half light / half dark gap */
+[data-app-shell] main,
+.chat-main-surface {
+  background: rgb(var(--bambi-background));
+}
+.message-wallpaper {
+  min-height: 100%;
+}
+.dark .message-wallpaper {
+  background-color: #0B141A;
+}
+:root:not(.dark) .message-wallpaper {
+  background-color: #EFEAE2;
+}
+/* Dialogs always use surface tokens */
+[role="dialog"] {
+  background: rgb(var(--bambi-surface));
+  color: rgb(var(--bambi-text));
+}
+
+/* Wallpaper layer stays put; messages scroll above it */
+.message-wallpaper {
+  background-repeat: no-repeat;
+  background-position: center center;
 }

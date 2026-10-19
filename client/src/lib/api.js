@@ -49,21 +49,53 @@ async function request(path, options = {}) {
 }
 
 export const api = {
-  register: (username, displayName, phone) =>
-    request('/api/v1/auth/register', {
+  requestOtp: (email, purpose = 'login') =>
+    request('/api/v1/auth/otp/request', {
       method: 'POST',
-      body: JSON.stringify({ username, displayName, phone }),
+      body: JSON.stringify({ email, purpose }),
     }),
 
-  login: (username, phone) =>
+  verifyOtp: (email, code, purpose = 'login') =>
+    request('/api/v1/auth/otp/verify', {
+      method: 'POST',
+      body: JSON.stringify({ email, code, purpose }),
+    }),
+
+  completeRegistration: (otpToken, username, displayName) =>
+    request('/api/v1/auth/register/complete', {
+      method: 'POST',
+      body: JSON.stringify({ otpToken, username, displayName }),
+    }),
+
+  register: (username, displayName, phone, extra = {}) =>
+    request('/api/v1/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ username, displayName, phone, ...extra }),
+    }),
+
+  login: (username, phone, extra = {}) =>
     request('/api/v1/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ username, phone }),
+      body: JSON.stringify({ username, phone, ...extra }),
     }),
 
   logout: () => request('/api/v1/auth/logout', { method: 'POST' }),
 
   me: () => request('/api/v1/me'),
+
+  updateProfile: (payload) =>
+    request('/api/v1/me', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  getPrivacy: () => request('/api/v1/me/privacy'),
+
+  updatePrivacy: (payload) =>
+    request('/api/v1/me/privacy', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
 
   searchUsers: (q) =>
     request(`/api/v1/search/users?q=${encodeURIComponent(q)}`),
@@ -99,8 +131,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ userId }),
     }),
-  getMessages: (conversationId) =>
-    request(`/api/v1/conversations/${conversationId}/messages`),
+  getMessages: (conversationId, { limit = 50, before } = {}) => {
+    const params = new URLSearchParams();
+    if (limit) params.set('limit', String(limit));
+    if (before) params.set('before', before);
+    const q = params.toString();
+    return request(`/api/v1/conversations/${conversationId}/messages${q ? `?${q}` : ''}`);
+  },
   sendEncryptedMessage: (conversationId, payload) =>
     request(`/api/v1/conversations/${conversationId}/messages`, {
       method: 'POST',

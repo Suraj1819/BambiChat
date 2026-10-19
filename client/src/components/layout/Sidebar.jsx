@@ -99,6 +99,8 @@ export function Sidebar({
   onNewGroup,
   onOpenSettings,
   onOpenFriends,
+  onLogout,
+  incomingRequestCount = 0,
   children,
   className,
 }) {
@@ -212,13 +214,24 @@ export function Sidebar({
             )}
           </label>
 
-          <IconButton
-            label="Find people"
-            onClick={onOpenFriends}
-            className="h-11 w-11 border border-bambi-border"
-          >
-            <Users className="h-[18px] w-[18px]" />
-          </IconButton>
+          <div className="relative">
+            <IconButton
+              label={
+                incomingRequestCount
+                  ? `Friends (${incomingRequestCount} requests)`
+                  : 'Friends & requests'
+              }
+              onClick={onOpenFriends}
+              className="h-11 w-11 border border-bambi-border"
+            >
+              <Users className="h-[18px] w-[18px]" />
+            </IconButton>
+            {incomingRequestCount > 0 && (
+              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-bambi-primary px-1 text-[10px] font-bold text-white shadow">
+                {incomingRequestCount > 9 ? '9+' : incomingRequestCount}
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="mt-3 grid grid-cols-2 gap-2">
@@ -360,7 +373,7 @@ export function Sidebar({
                 role="menuitem"
                 onClick={() => {
                   setProfileMenuOpen(false);
-                  onOpenSettings?.();
+                  onLogout?.();
                 }}
                 className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-bambi-error transition hover:bg-bambi-hover"
               >

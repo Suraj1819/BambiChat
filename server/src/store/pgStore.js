@@ -22,6 +22,21 @@ function normalizeUsername(u) {
   return String(u || '').trim().toLowerCase();
 }
 
+const otpStore = new Map();
+const otpSessions = new Map();
+const emailIndexCache = new Map(); // best-effort if no email column
+
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email));
+}
+function generateOtpCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+
 function publicProfile(row, hasKey = false) {
   if (!row) return null;
   const userId = row.user_id || row.userId;
@@ -31,6 +46,8 @@ function publicProfile(row, hasKey = false) {
     displayName: row.display_name ?? row.displayName ?? row.username,
     avatarUrl: row.avatar_url ?? row.avatarUrl ?? null,
     about: row.about ?? '',
+    email: row.email ?? null,
+    phone: row.phone ?? null,
     hasIdentityKey: hasKey,
   };
 }
@@ -64,7 +81,185 @@ async function areFriends(a, b) {
 }
 
 export const pgStore = {
-  async register({ username, displayName }) {
+  async register({ username, displayName, phone }) {
+    const uname = normalizeUsername(username);
+    const digits = String(phone || '').replace(/\D/g, '');
+    if (!/^[a-z][a-z0-9_]{2,29}$/.test(uname)) {
+      return {
+        error: {
+          code: 'INVALID_USERNAME',
+          message: 'Username must be 3–30 chars, start with a letter, only a-z 0-9 _',
+        },
+      };
+    }
+    if (digits && (digits.length < 8 || digits.length > 15)) {
+      return { error: { code: 'INVALID_PHONE', message: 'Enter a valid phone number (8–15 digits)' } };
+    }
+    const exists = await query(`SELECT 1 FROM profiles WHERE lower(username) = $1`, [uname]);
+    if (exists.rowCount > 0) {
+      return { error: { code: 'USERNAME_TAKEN', message: 'Username is already taken' } };
+    }
+    if (digits) {
+      try {
+        const ph = await query(
+          `SELECT 1 FROM profiles WHERE phone = $1 LIMIT 1`,
+          [digits]
+        );
+        if (ph.rowCount > 0) {
+          return { error: { code: 'PHONE_TAKEN', message: 'This phone number is already registered' } };
+        }
+      } catch {
+        /* phone column may not exist yet */
+      }
+    }
+    const userId = randomUUID();
+    const dn = (displayName || uname).trim().slice(0, 80);
+    try {
+      await query(
+        `INSERT INTO profiles (user_id, username, display_name, phone)
+         VALUES ($1, $2, $3, $4)`,
+        [userId, uname, dn, digits || null]
+      );
+    } catch {
+      await query(
+        `INSERT INTO profiles (user_id, username, display_name)
+         VALUES ($1, $2, $3)`,
+        [userId, uname, dn]
+      );
+    }
+    await query(
+      `INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING`,
+      [userId]
+    );
+    return { data: publicProfile({ user_id: userId, username: uname, display_name: dn }) };
+  },
+
+  async login(username, phone) {
+    const digits = String(phone || '').replace(/\D/g, '');
+    if (digits) {
+      try {
+        const r = await query(`SELECT * FROM profiles WHERE phone = $1 LIMIT 1`, [digits]);
+        if (!r.rowCount) {
+          return { error: { code: 'USER_NOT_FOUND', message: 'No account with that phone number' } };
+        }
+        const hasKey = await hasIdentityKey(r.rows[0].user_id);
+        return { data: publicProfile(r.rows[0], hasKey) };
+      } catch {
+        return { error: { code: 'USER_NOT_FOUND', message: 'No account with that phone number' } };
+      }
+    }
+    const uname = normalizeUsername(username);
+    const r = await query(`SELECT * FROM profiles WHERE lower(username) = $1 LIMIT 1`, [uname]);
+    if (!r.rowCount) {
+      return { error: { code: 'USER_NOT_FOUND', message: 'No account with that username' } };
+    }
+    const hasKey = await hasIdentityKey(r.rows[0].user_id);
+    return { data: publicProfile(r.rows[0], hasKey) };
+  },
+
+
+  async requestOtp({ email, purpose = 'login' }) {
+    const em = normalizeEmail(email);
+    if (!isValidEmail(em)) {
+      return { error: { code: 'INVALID_EMAIL', message: 'Enter a valid email address' } };
+    }
+    if (!['login', 'register'].includes(purpose)) {
+      return { error: { code: 'VALIDATION', message: 'Invalid purpose' } };
+    }
+    let exists = false;
+    try {
+      const r = await query(
+        `SELECT user_id FROM profiles WHERE lower(coalesce(email, '')) = $1 LIMIT 1`,
+        [em]
+      );
+      exists = r.rowCount > 0;
+      if (exists) emailIndexCache.set(em, r.rows[0].user_id);
+    } catch {
+      exists = emailIndexCache.has(em);
+    }
+    if (purpose === 'login' && !exists) {
+      return { error: { code: 'USER_NOT_FOUND', message: 'No account with that email' } };
+    }
+    if (purpose === 'register' && exists) {
+      return { error: { code: 'EMAIL_TAKEN', message: 'This email is already registered. Please log in.' } };
+    }
+    const code = generateOtpCode();
+    otpStore.set(em, { code, purpose, expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0 });
+    return {
+      data: {
+        email: em,
+        purpose,
+        expiresInSec: 600,
+        devCode: code,
+        message: 'OTP sent to your email',
+      },
+    };
+  },
+
+  async verifyOtp({ email, code, purpose = 'login' }) {
+    const em = normalizeEmail(email);
+    const entry = otpStore.get(em);
+    if (!entry || entry.purpose !== purpose) {
+      return { error: { code: 'OTP_INVALID', message: 'Invalid or expired code' } };
+    }
+    if (entry.expiresAt < Date.now()) {
+      otpStore.delete(em);
+      return { error: { code: 'OTP_EXPIRED', message: 'Code expired. Request a new one.' } };
+    }
+    entry.attempts += 1;
+    if (entry.attempts > 5) {
+      otpStore.delete(em);
+      return { error: { code: 'OTP_LOCKED', message: 'Too many attempts. Request a new code.' } };
+    }
+    if (String(code).trim() !== entry.code) {
+      return { error: { code: 'OTP_INVALID', message: 'Incorrect code' } };
+    }
+    otpStore.delete(em);
+
+    if (purpose === 'login') {
+      let userId = emailIndexCache.get(em);
+      let row = null;
+      try {
+        const r = await query(
+          `SELECT * FROM profiles WHERE lower(coalesce(email, '')) = $1 LIMIT 1`,
+          [em]
+        );
+        if (r.rowCount) {
+          row = r.rows[0];
+          userId = row.user_id;
+        }
+      } catch {
+        /* ignore */
+      }
+      if (!userId) {
+        return { error: { code: 'USER_NOT_FOUND', message: 'No account with that email' } };
+      }
+      const token = this.createSession(userId);
+      const hasKey = await hasIdentityKey(userId);
+      return {
+        data: {
+          token,
+          user: publicProfile(row || { user_id: userId }, hasKey),
+          verified: true,
+        },
+      };
+    }
+
+    const sessionToken = randomBytes(24).toString('hex');
+    otpSessions.set(hashToken(sessionToken), {
+      email: em,
+      purpose: 'register',
+      expiresAt: Date.now() + 15 * 60 * 1000,
+    });
+    return { data: { otpToken: sessionToken, email: em, verified: true } };
+  },
+
+  async completeRegistration({ otpToken, username, displayName }) {
+    const rec = otpSessions.get(hashToken(otpToken || ''));
+    if (!rec || rec.purpose !== 'register' || rec.expiresAt < Date.now()) {
+      return { error: { code: 'OTP_SESSION_EXPIRED', message: 'Verification expired. Start again.' } };
+    }
+    const em = rec.email;
     const uname = normalizeUsername(username);
     if (!/^[a-z][a-z0-9_]{2,29}$/.test(uname)) {
       return {
@@ -80,26 +275,113 @@ export const pgStore = {
     }
     const userId = randomUUID();
     const dn = (displayName || uname).trim().slice(0, 80);
-    await query(
-      `INSERT INTO profiles (user_id, username, display_name)
-       VALUES ($1, $2, $3)`,
-      [userId, uname, dn]
-    );
-    await query(
-      `INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING`,
-      [userId]
-    );
-    return { data: publicProfile({ user_id: userId, username: uname, display_name: dn }) };
+    try {
+      await query(
+        `INSERT INTO profiles (user_id, username, display_name, email)
+         VALUES ($1, $2, $3, $4)`,
+        [userId, uname, dn, em]
+      );
+    } catch {
+      // Schema without email column
+      await query(
+        `INSERT INTO profiles (user_id, username, display_name)
+         VALUES ($1, $2, $3)`,
+        [userId, uname, dn]
+      );
+    }
+    try {
+      await query(
+        `INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING`,
+        [userId]
+      );
+    } catch {
+      /* optional */
+    }
+    emailIndexCache.set(em, userId);
+    otpSessions.delete(hashToken(otpToken));
+    const token = this.createSession(userId);
+    return {
+      data: {
+        token,
+        user: publicProfile({ user_id: userId, username: uname, display_name: dn, email: em }),
+      },
+    };
   },
 
-  async login(username) {
-    const uname = normalizeUsername(username);
-    const r = await query(`SELECT * FROM profiles WHERE lower(username) = $1 LIMIT 1`, [uname]);
-    if (!r.rowCount) {
-      return { error: { code: 'USER_NOT_FOUND', message: 'No account with that username' } };
+
+  async findUserIdByEmail(email) {
+    const em = normalizeEmail(email);
+    try {
+      const r = await query(
+        `SELECT user_id FROM profiles WHERE lower(coalesce(email, '')) = $1 LIMIT 1`,
+        [em]
+      );
+      if (r.rowCount) return r.rows[0].user_id;
+    } catch {
+      /* no email column */
     }
-    const hasKey = await hasIdentityKey(r.rows[0].user_id);
-    return { data: publicProfile(r.rows[0], hasKey) };
+    return emailIndexCache.get(em) || null;
+  },
+
+  async registerWithEmail({ email, username, displayName }) {
+    const em = normalizeEmail(email);
+    if (!isValidEmail(em)) {
+      return { error: { code: 'INVALID_EMAIL', message: 'Enter a valid email address' } };
+    }
+    const existing = await this.findUserIdByEmail(em);
+    if (existing) {
+      return { error: { code: 'EMAIL_TAKEN', message: 'This email is already registered' } };
+    }
+    const uname = normalizeUsername(username);
+    if (!/^[a-z][a-z0-9_]{2,29}$/.test(uname)) {
+      return {
+        error: {
+          code: 'INVALID_USERNAME',
+          message: 'Username must be 3–30 chars, start with a letter, only a-z 0-9 _',
+        },
+      };
+    }
+    const exists = await query(`SELECT 1 FROM profiles WHERE lower(username) = $1`, [uname]);
+    if (exists.rowCount > 0) {
+      return { error: { code: 'USERNAME_TAKEN', message: 'Username is already taken' } };
+    }
+    const userId = randomUUID();
+    const dn = (displayName || uname).trim().slice(0, 80);
+    try {
+      await query(
+        `INSERT INTO profiles (user_id, username, display_name, email)
+         VALUES ($1, $2, $3, $4)`,
+        [userId, uname, dn, em]
+      );
+    } catch (e) {
+      // Fallback without email column
+      try {
+        await query(
+          `INSERT INTO profiles (user_id, username, display_name)
+           VALUES ($1, $2, $3)`,
+          [userId, uname, dn]
+        );
+      } catch (e2) {
+        return { error: { code: 'DB_ERROR', message: e2.message || 'Could not create profile' } };
+      }
+    }
+    try {
+      await query(
+        `INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING`,
+        [userId]
+      );
+    } catch {
+      /* optional */
+    }
+    emailIndexCache.set(em, userId);
+    return {
+      data: publicProfile({
+        user_id: userId,
+        username: uname,
+        display_name: dn,
+        email: em,
+      }),
+    };
   },
 
   createSession(userId) {
@@ -181,14 +463,21 @@ export const pgStore = {
   },
 
   async searchByUsername(q, currentUserId, limit = 20) {
-    const term = normalizeUsername(q);
-    if (!term) return [];
+    const raw = String(q || '').trim().replace(/^@+/, '');
+    const term = normalizeUsername(raw);
+    // Only match username (the @handle), not display name
+    if (!term || term.length < 1) return [];
     const r = await query(
       `SELECT p.* FROM profiles p
        WHERE p.user_id <> $1
-         AND (p.username ILIKE $2 OR coalesce(p.display_name,'') ILIKE $2)
+         AND lower(p.username) = $2
+       ORDER BY p.username ASC
        LIMIT $3`,
-      [currentUserId, `%${term}%`, limit]
+      [
+        currentUserId,
+        term,
+        limit,
+      ]
     );
     const out = [];
     for (const row of r.rows) {
@@ -582,17 +871,32 @@ export const pgStore = {
     return { data: { id, existing: false, peerUserId: otherUserId } };
   },
 
-  async getMessages(conversationId, userId, limit = 50) {
+  async getMessages(conversationId, userId, limit = 50, before = null) {
     if (!(await this.isMember(conversationId, userId))) {
       return { error: { code: 'FORBIDDEN', message: 'Not a member of this conversation' } };
     }
-    const r = await query(
-      `SELECT * FROM messages WHERE conversation_id = $1
-       ORDER BY created_at ASC LIMIT $2`,
-      [conversationId, limit]
-    );
+    const lim = Math.min(Math.max(Number(limit) || 50, 1), 100);
+    let r;
+    if (before) {
+      r = await query(
+        `SELECT * FROM messages
+         WHERE conversation_id = $1
+           AND created_at < (SELECT created_at FROM messages WHERE id = $2)
+         ORDER BY created_at DESC
+         LIMIT $3`,
+        [conversationId, before, lim]
+      );
+    } else {
+      r = await query(
+        `SELECT * FROM messages WHERE conversation_id = $1
+         ORDER BY created_at DESC LIMIT $2`,
+        [conversationId, lim]
+      );
+    }
+    const rows = r.rows.reverse();
+    const hasMore = r.rows.length === lim;
     return {
-      data: r.rows.map((m) => ({
+      data: rows.map((m) => ({
         id: m.id,
         conversationId: m.conversation_id,
         senderId: m.sender_user_id,
@@ -606,6 +910,7 @@ export const pgStore = {
         deliveredTo: [],
         readBy: [],
       })),
+      hasMore,
     };
   },
 
@@ -1139,6 +1444,74 @@ export const pgStore = {
       return true;
     } catch {
       return false;
+    }
+  },
+
+
+  async insertCallLogMessage(conversationId, {
+    callerId,
+    calleeId,
+    kind = 'audio',
+    status = 'ended',
+    durationMs = 0,
+    callId = null,
+  }) {
+    if (!conversationId) {
+      return { error: { code: 'NOT_FOUND', message: 'Conversation not found' } };
+    }
+    const id = randomUUID();
+    const clientMessageId = `call-${callId || id}`;
+    const payload = JSON.stringify({
+      type: 'call',
+      callId,
+      callerId,
+      calleeId,
+      kind,
+      status,
+      durationMs: durationMs || 0,
+    });
+    try {
+      const ins = await query(
+        `INSERT INTO messages (
+           id, conversation_id, sender_user_id, sender_device_id, client_message_id,
+           ciphertext, protocol_version, message_type
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+        [
+          id,
+          conversationId,
+          callerId,
+          0,
+          clientMessageId,
+          Buffer.from(payload, 'utf8'),
+          'bambi-system-v1',
+          'call',
+        ]
+      );
+      const m = ins.rows[0];
+      return {
+        data: {
+          id: m.id,
+          conversationId: m.conversation_id,
+          senderId: m.sender_user_id,
+          senderDeviceId: m.sender_device_id,
+          clientMessageId: m.client_message_id,
+          ciphertext: payload,
+          protocolVersion: m.protocol_version,
+          messageType: 'call',
+          createdAt: m.created_at,
+          status: 'sent',
+          call: {
+            callId,
+            callerId,
+            calleeId,
+            kind,
+            status,
+            durationMs: durationMs || 0,
+          },
+        },
+      };
+    } catch (e) {
+      return { error: { code: 'DB_ERROR', message: e.message || 'Could not save call log' } };
     }
   },
 
